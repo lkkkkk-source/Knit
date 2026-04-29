@@ -1,0 +1,1042 @@
+[
+  [
+    {
+      "row": 0,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 0,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 0,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 0,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 0,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 1,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 1,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 1,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 1,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 1,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 2,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 2,
+      "column": 1,
+      "color_hex": "#0000DF",
+      "action_id": 16,
+      "candidate_ids": [
+        16
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 2,
+      "column": 2,
+      "color_hex": "#0000DF",
+      "action_id": 16,
+      "candidate_ids": [
+        16
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 2,
+      "column": 3,
+      "color_hex": "#BF00DF",
+      "action_id": 55,
+      "candidate_ids": [
+        55
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 2,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 3,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 3,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 3,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 3,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 3,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 4,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 4,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 4,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 4,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 4,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 5,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 5,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 5,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 5,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 5,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 6,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 6,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 6,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 6,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 6,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 7,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 7,
+      "column": 1,
+      "color_hex": "#BF00DF",
+      "action_id": 55,
+      "candidate_ids": [
+        55
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 7,
+      "column": 2,
+      "color_hex": "#0000DF",
+      "action_id": 16,
+      "candidate_ids": [
+        16
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 7,
+      "column": 3,
+      "color_hex": "#0000DF",
+      "action_id": 16,
+      "candidate_ids": [
+        16
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 7,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 8,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 8,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 8,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 8,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 8,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 9,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 9,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 9,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 9,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 9,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 10,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 10,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 10,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 10,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 10,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 11,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 11,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 11,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 11,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 11,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 12,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 12,
+      "column": 1,
+      "color_hex": "#0000DF",
+      "action_id": 16,
+      "candidate_ids": [
+        16
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 12,
+      "column": 2,
+      "color_hex": "#0000DF",
+      "action_id": 16,
+      "candidate_ids": [
+        16
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 12,
+      "column": 3,
+      "color_hex": "#BF00DF",
+      "action_id": 55,
+      "candidate_ids": [
+        55
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 12,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 13,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 13,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 13,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 13,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 13,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 14,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 14,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 14,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 14,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 14,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 15,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 15,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 15,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 15,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 15,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 16,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 16,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 16,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 16,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 16,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 17,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 17,
+      "column": 1,
+      "color_hex": "#BF00DF",
+      "action_id": 55,
+      "candidate_ids": [
+        55
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 17,
+      "column": 2,
+      "color_hex": "#0000DF",
+      "action_id": 16,
+      "candidate_ids": [
+        16
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 17,
+      "column": 3,
+      "color_hex": "#0000DF",
+      "action_id": 16,
+      "candidate_ids": [
+        16
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 17,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 18,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 18,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 18,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 18,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 18,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ],
+  [
+    {
+      "row": 19,
+      "column": 0,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 19,
+      "column": 1,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 19,
+      "column": 2,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 19,
+      "column": 3,
+      "color_hex": "#FF0000",
+      "action_id": 249,
+      "candidate_ids": [
+        249
+      ],
+      "purity": 1.0
+    },
+    {
+      "row": 19,
+      "column": 4,
+      "color_hex": "#00FF00",
+      "action_id": 250,
+      "candidate_ids": [
+        250
+      ],
+      "purity": 1.0
+    }
+  ]
+]

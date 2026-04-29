@@ -1,0 +1,16 @@
+{
+  "export_root": "outputs\\ar-train-th",
+  "output_dir": "results\\pixelcnn-formal",
+  "device": "cpu",
+  "grid_vocab_size": 163,
+  "dataset_size": 125,
+  "train_loss": 1.3725594505667686,
+  "eval_loss": 5.087857395410538,
+  "epochs_completed": 10,
+  "best_epoch": 10,
+  "best_metric_name": "eval_loss",
+  "best_metric_value": 5.087852954864502,
+  "best_checkpoint_path": "results\\pixelcnn-formal\\best_checkpoint.pt",
+  "metrics_history_path": "results\\pixelcnn-formal\\metrics_history.json",
+  "generated_samples_path": "results\\pixelcnn-formal\\generated_grids.json"
+}

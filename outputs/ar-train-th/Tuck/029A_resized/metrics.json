@@ -1,0 +1,36 @@
+{
+  "category": "Tuck",
+  "source_path": "dataset\\stitch code patterns\\Tuck\\029A_resized.png",
+  "source_stem": "029A",
+  "pairing_key": "29A",
+  "simulation_path": "dataset\\simulation images\\Tuck\\029A.png",
+  "source_size": [
+    80,
+    80
+  ],
+  "crop_box": [
+    29,
+    22,
+    51,
+    58
+  ],
+  "background_color": "#FF0000",
+  "grid_rows": 36,
+  "grid_columns": 22,
+  "cell_width": 1,
+  "cell_height": 1,
+  "usable_size": [
+    22,
+    36
+  ],
+  "trimmed_width": 0,
+  "trimmed_height": 0,
+  "trimmed_pixel_count": 0,
+  "warnings": [],
+  "mean_quantization_distance": 7.95505,
+  "max_quantization_distance": 45.254834,
+  "average_cell_purity": 1.0,
+  "ambiguous_cell_count": 0,
+  "ambiguous_cells": [],
+  "exact_pixel_match_ratio": 1.0
+}

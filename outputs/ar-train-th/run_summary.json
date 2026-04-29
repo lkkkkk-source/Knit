@@ -1,0 +1,4542 @@
+{
+  "status": "ok",
+  "dataset_root": "dataset",
+  "output_root": "outputs\\ar-train-th",
+  "categories": [
+    "Tuck",
+    "Hem"
+  ],
+  "legend_duplicate_colors": {
+    "#A21F5F": [
+      115,
+      116
+    ]
+  },
+  "discovered_samples": 125,
+  "processed_samples": 125,
+  "failed_samples": 0,
+  "duration_seconds": 35.870522,
+  "warnings": [
+    "trimmed_remainder_pixels"
+  ],
+  "failures": [],
+  "samples": [
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\001_resized.png",
+      "source_stem": "001",
+      "pairing_key": "1",
+      "simulation_path": "dataset\\simulation images\\Tuck\\001.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        36,
+        34,
+        44,
+        46
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 12,
+      "grid_columns": 8,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        8,
+        12
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 31.527766,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\002_resized.png",
+      "source_stem": "002",
+      "pairing_key": "2",
+      "simulation_path": "dataset\\simulation images\\Tuck\\002.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        36,
+        34,
+        44,
+        46
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 12,
+      "grid_columns": 8,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        8,
+        12
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 32.726136,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\002A_resized.png",
+      "source_stem": "002A",
+      "pairing_key": "2A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\002A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        36,
+        33,
+        44,
+        46
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 13,
+      "grid_columns": 8,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        8,
+        13
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 31.442255,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\003_resized.png",
+      "source_stem": "003",
+      "pairing_key": "3",
+      "simulation_path": "dataset\\simulation images\\Tuck\\003.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        29,
+        47,
+        51
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 22,
+      "grid_columns": 15,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        15,
+        22
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 19.011958,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\004_resized.png",
+      "source_stem": "004",
+      "pairing_key": "4",
+      "simulation_path": "dataset\\simulation images\\Tuck\\004.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        35,
+        29,
+        44,
+        51
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 22,
+      "grid_columns": 9,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        9,
+        22
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 25.477263,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\005_resized.png",
+      "source_stem": "005",
+      "pairing_key": "5",
+      "simulation_path": "dataset\\simulation images\\Tuck\\005.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        33,
+        31,
+        46,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 18,
+      "grid_columns": 13,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        13,
+        18
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 17.488458,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\006_resized.png",
+      "source_stem": "006",
+      "pairing_key": "6",
+      "simulation_path": "dataset\\simulation images\\Tuck\\006.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        33,
+        31,
+        45,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 18,
+      "grid_columns": 12,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        12,
+        18
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 18.894444,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\007_resized.png",
+      "source_stem": "007",
+      "pairing_key": "7",
+      "simulation_path": "dataset\\simulation images\\Tuck\\007.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        35,
+        32,
+        45,
+        47
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 15,
+      "grid_columns": 10,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        10,
+        15
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 14.562051,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\007A_resized.png",
+      "source_stem": "007A",
+      "pairing_key": "7A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\007A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        35,
+        32,
+        45,
+        47
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 15,
+      "grid_columns": 10,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        10,
+        15
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.235468,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\008_resized.png",
+      "source_stem": "008",
+      "pairing_key": "8",
+      "simulation_path": "dataset\\simulation images\\Tuck\\008.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        31,
+        46,
+        47
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 16,
+      "grid_columns": 12,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        12,
+        16
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.651923,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\008A_resized.png",
+      "source_stem": "008A",
+      "pairing_key": "8A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\008A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        31,
+        46,
+        47
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 16,
+      "grid_columns": 12,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        12,
+        16
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 10.644834,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\009_resized.png",
+      "source_stem": "009",
+      "pairing_key": "9",
+      "simulation_path": "dataset\\simulation images\\Tuck\\009.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        35,
+        32,
+        45,
+        48
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 16,
+      "grid_columns": 10,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        10,
+        16
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.210651,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\009A_resized.png",
+      "source_stem": "009A",
+      "pairing_key": "9A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\009A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        35,
+        32,
+        45,
+        48
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 16,
+      "grid_columns": 10,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        10,
+        16
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 9.521029,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\010_resized.png",
+      "source_stem": "010",
+      "pairing_key": "10",
+      "simulation_path": "dataset\\simulation images\\Tuck\\010.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        35,
+        30,
+        45,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 19,
+      "grid_columns": 10,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        10,
+        19
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.723587,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\010A_resized.png",
+      "source_stem": "010A",
+      "pairing_key": "10A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\010A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        35,
+        30,
+        45,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 19,
+      "grid_columns": 10,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        10,
+        19
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 10.700713,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\011_resized.png",
+      "source_stem": "011",
+      "pairing_key": "11",
+      "simulation_path": "dataset\\simulation images\\Tuck\\011.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        30,
+        45,
+        50
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 20,
+      "grid_columns": 11,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        11,
+        20
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 7.3633,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\011A_resized.png",
+      "source_stem": "011A",
+      "pairing_key": "11A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\011A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        30,
+        45,
+        50
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 20,
+      "grid_columns": 11,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        11,
+        20
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 5.741397,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\012_resized.png",
+      "source_stem": "012",
+      "pairing_key": "12",
+      "simulation_path": "dataset\\simulation images\\Tuck\\012.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        31,
+        26,
+        48,
+        53
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 27,
+      "grid_columns": 17,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        17,
+        27
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.120462,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\012A_resized.png",
+      "source_stem": "012A",
+      "pairing_key": "12A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\012A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        31,
+        26,
+        48,
+        53
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 27,
+      "grid_columns": 17,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        17,
+        27
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.142892,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\013_resized.png",
+      "source_stem": "013",
+      "pairing_key": "13",
+      "simulation_path": "dataset\\simulation images\\Tuck\\013.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        31,
+        25,
+        48,
+        54
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 29,
+      "grid_columns": 17,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        17,
+        29
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 14.75644,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\013A_resized.png",
+      "source_stem": "013A",
+      "pairing_key": "13A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\013A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        31,
+        25,
+        48,
+        54
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 29,
+      "grid_columns": 17,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        17,
+        29
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 11.506062,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\014_resized.png",
+      "source_stem": "014",
+      "pairing_key": "14",
+      "simulation_path": "dataset\\simulation images\\Tuck\\014.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        31,
+        27,
+        48,
+        52
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 25,
+      "grid_columns": 17,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        17,
+        25
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.976721,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\015_resized.png",
+      "source_stem": "015",
+      "pairing_key": "15",
+      "simulation_path": "dataset\\simulation images\\Tuck\\015.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        30,
+        46,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 19,
+      "grid_columns": 12,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        12,
+        19
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.015781,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\015A_resized.png",
+      "source_stem": "015A",
+      "pairing_key": "15A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\015A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        30,
+        46,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 19,
+      "grid_columns": 12,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        12,
+        19
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.260334,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\016_resized.png",
+      "source_stem": "016",
+      "pairing_key": "16",
+      "simulation_path": "dataset\\simulation images\\Tuck\\016.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        26,
+        48,
+        54
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 9,
+      "grid_columns": 16,
+      "cell_width": 1,
+      "cell_height": 3,
+      "usable_size": [
+        16,
+        27
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 1,
+      "trimmed_pixel_count": 16,
+      "warnings": [
+        "trimmed_remainder_pixels"
+      ],
+      "mean_quantization_distance": 13.119642,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 0.965278,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 0.965278
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\016A_resized.png",
+      "source_stem": "016A",
+      "pairing_key": "16A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\016A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        26,
+        48,
+        54
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 14,
+      "grid_columns": 16,
+      "cell_width": 1,
+      "cell_height": 2,
+      "usable_size": [
+        16,
+        28
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 10.062306,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 0.959821,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 0.959821
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\016B_resized.png",
+      "source_stem": "016B",
+      "pairing_key": "16B",
+      "simulation_path": "dataset\\simulation images\\Tuck\\016B.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        26,
+        48,
+        54
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 28,
+      "grid_columns": 16,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        16,
+        28
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 10.712143,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\017_resized.png",
+      "source_stem": "017",
+      "pairing_key": "17",
+      "simulation_path": "dataset\\simulation images\\Tuck\\017.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        30,
+        45,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 19,
+      "grid_columns": 11,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        11,
+        19
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 19.992582,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\017A_resized.png",
+      "source_stem": "017A",
+      "pairing_key": "17A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\017A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        30,
+        45,
+        50
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 20,
+      "grid_columns": 11,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        11,
+        20
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 25.334669,
+      "max_quantization_distance": 56.302753,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\018_resized.png",
+      "source_stem": "018",
+      "pairing_key": "18",
+      "simulation_path": "dataset\\simulation images\\Tuck\\018.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        33,
+        31,
+        46,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 18,
+      "grid_columns": 13,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        13,
+        18
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 20.388534,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\018A_resized.png",
+      "source_stem": "018A",
+      "pairing_key": "18A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\018A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        33,
+        31,
+        46,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 18,
+      "grid_columns": 13,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        13,
+        18
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 18.861166,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\019_resized.png",
+      "source_stem": "019",
+      "pairing_key": "19",
+      "simulation_path": "dataset\\simulation images\\Tuck\\019.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        31,
+        28,
+        48,
+        52
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 24,
+      "grid_columns": 17,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        17,
+        24
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 17.829256,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\020_resized.png",
+      "source_stem": "020",
+      "pairing_key": "20",
+      "simulation_path": "dataset\\simulation images\\Tuck\\020.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        33,
+        27,
+        46,
+        52
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 25,
+      "grid_columns": 13,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        13,
+        25
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 17.190337,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\021_resized.png",
+      "source_stem": "021",
+      "pairing_key": "21",
+      "simulation_path": "dataset\\simulation images\\Tuck\\021.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        31,
+        25,
+        49,
+        55
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 30,
+      "grid_columns": 18,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        18,
+        30
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 23.95018,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\021A_resized.png",
+      "source_stem": "021A",
+      "pairing_key": "21A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\021A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        31,
+        24,
+        49,
+        55
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 31,
+      "grid_columns": 18,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        18,
+        31
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 23.935771,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\022_resized.png",
+      "source_stem": "022",
+      "pairing_key": "22",
+      "simulation_path": "dataset\\simulation images\\Tuck\\022.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        26,
+        47,
+        54
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 28,
+      "grid_columns": 15,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        15,
+        28
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.053735,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\023_resized.png",
+      "source_stem": "023",
+      "pairing_key": "23",
+      "simulation_path": "dataset\\simulation images\\Tuck\\023.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        14,
+        47,
+        66
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 52,
+      "grid_columns": 15,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        15,
+        52
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.400993,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\023A_resized.png",
+      "source_stem": "023A",
+      "pairing_key": "23A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\023A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        14,
+        47,
+        66
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 52,
+      "grid_columns": 15,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        15,
+        52
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 10.309816,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\024_resized.png",
+      "source_stem": "024",
+      "pairing_key": "24",
+      "simulation_path": "dataset\\simulation images\\Tuck\\024.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        36,
+        28,
+        43,
+        51
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 23,
+      "grid_columns": 7,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        7,
+        23
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 21.348047,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\024A_resized.png",
+      "source_stem": "024A",
+      "pairing_key": "24A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\024A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        28,
+        48,
+        52
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 24,
+      "grid_columns": 16,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        16,
+        24
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 19.548817,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\025_resized.png",
+      "source_stem": "025",
+      "pairing_key": "25",
+      "simulation_path": "dataset\\simulation images\\Tuck\\025.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        28,
+        29,
+        51,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 20,
+      "grid_columns": 23,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        23,
+        20
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.936803,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\025A_resized.png",
+      "source_stem": "025A",
+      "pairing_key": "25A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\025A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        28,
+        26,
+        51,
+        52
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 26,
+      "grid_columns": 23,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        23,
+        26
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.842498,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\026_resized.png",
+      "source_stem": "026",
+      "pairing_key": "26",
+      "simulation_path": "dataset\\simulation images\\Tuck\\026.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        36,
+        20,
+        44,
+        60
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 40,
+      "grid_columns": 8,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        8,
+        40
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 14.954932,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\027_resized.png",
+      "source_stem": "027",
+      "pairing_key": "27",
+      "simulation_path": "dataset\\simulation images\\Tuck\\027.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        36,
+        24,
+        44,
+        56
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 32,
+      "grid_columns": 8,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        8,
+        32
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 17.624557,
+      "max_quantization_distance": 44.586994,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\028_resized.png",
+      "source_stem": "028",
+      "pairing_key": "28",
+      "simulation_path": "dataset\\simulation images\\Tuck\\028.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        23,
+        46,
+        57
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 34,
+      "grid_columns": 12,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        12,
+        34
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.696248,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\028A_resized.png",
+      "source_stem": "028A",
+      "pairing_key": "28A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\028A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        34,
+        23,
+        46,
+        57
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 34,
+      "grid_columns": 12,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        12,
+        34
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 14.17053,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\029_resized.png",
+      "source_stem": "029",
+      "pairing_key": "29",
+      "simulation_path": "dataset\\simulation images\\Tuck\\029.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        28,
+        22,
+        51,
+        58
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 36,
+      "grid_columns": 23,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        23,
+        36
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 8.929677,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\029A_resized.png",
+      "source_stem": "029A",
+      "pairing_key": "29A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\029A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        29,
+        22,
+        51,
+        58
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 36,
+      "grid_columns": 22,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        22,
+        36
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 7.95505,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\030_resized.png",
+      "source_stem": "030",
+      "pairing_key": "30",
+      "simulation_path": "dataset\\simulation images\\Tuck\\030.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        29,
+        23,
+        50,
+        55
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 32,
+      "grid_columns": 21,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        21,
+        32
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 22.660538,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\031_resized.png",
+      "source_stem": "031",
+      "pairing_key": "31",
+      "simulation_path": "dataset\\simulation images\\Tuck\\031.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        33,
+        27,
+        46,
+        52
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 25,
+      "grid_columns": 13,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        13,
+        25
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 18.426736,
+      "max_quantization_distance": 71.554175,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\032_resized.png",
+      "source_stem": "032",
+      "pairing_key": "32",
+      "simulation_path": "dataset\\simulation images\\Tuck\\032.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        33,
+        32,
+        47,
+        48
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 16,
+      "grid_columns": 14,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        14,
+        16
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 18.401524,
+      "max_quantization_distance": 71.554175,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\033_resized.png",
+      "source_stem": "033",
+      "pairing_key": "33",
+      "simulation_path": "dataset\\simulation images\\Tuck\\033.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        25,
+        47,
+        54
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 29,
+      "grid_columns": 15,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        15,
+        29
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 22.957832,
+      "max_quantization_distance": 71.554175,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\034_resized.png",
+      "source_stem": "034",
+      "pairing_key": "34",
+      "simulation_path": "dataset\\simulation images\\Tuck\\034.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        28,
+        27,
+        51,
+        53
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 26,
+      "grid_columns": 23,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        23,
+        26
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.928869,
+      "max_quantization_distance": 71.554175,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\034A_resized.png",
+      "source_stem": "034A",
+      "pairing_key": "34A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\034A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        28,
+        27,
+        51,
+        53
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 26,
+      "grid_columns": 23,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        23,
+        26
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.318833,
+      "max_quantization_distance": 71.554175,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\035_resized.png",
+      "source_stem": "035",
+      "pairing_key": "35",
+      "simulation_path": "dataset\\simulation images\\Tuck\\035.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        29,
+        21,
+        51,
+        57
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 36,
+      "grid_columns": 22,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        22,
+        36
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 19.625792,
+      "max_quantization_distance": 71.554175,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\036_resized.png",
+      "source_stem": "036",
+      "pairing_key": "36",
+      "simulation_path": "dataset\\simulation images\\Tuck\\036.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        27,
+        15,
+        52,
+        65
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 50,
+      "grid_columns": 25,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        25,
+        50
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 8.499412,
+      "max_quantization_distance": 71.554175,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\037_resized.png",
+      "source_stem": "037",
+      "pairing_key": "37",
+      "simulation_path": "dataset\\simulation images\\Tuck\\037.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        30,
+        47,
+        51
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 21,
+      "grid_columns": 15,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        15,
+        21
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 18.980692,
+      "max_quantization_distance": 46.281746,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\038_resized.png",
+      "source_stem": "038",
+      "pairing_key": "38",
+      "simulation_path": "dataset\\simulation images\\Tuck\\038.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        26,
+        19,
+        53,
+        62
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 43,
+      "grid_columns": 27,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        27,
+        43
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.385557,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\038A_resized.png",
+      "source_stem": "038A",
+      "pairing_key": "38A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\038A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        26,
+        19,
+        53,
+        62
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 43,
+      "grid_columns": 27,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        27,
+        43
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.61092,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\039_resized.png",
+      "source_stem": "039",
+      "pairing_key": "39",
+      "simulation_path": "dataset\\simulation images\\Tuck\\039.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        26,
+        19,
+        53,
+        62
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 43,
+      "grid_columns": 27,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        27,
+        43
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.698654,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\039A_resized.png",
+      "source_stem": "039A",
+      "pairing_key": "39A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\039A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        26,
+        19,
+        53,
+        62
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 43,
+      "grid_columns": 27,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        27,
+        43
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 11.96377,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\040_resized.png",
+      "source_stem": "040",
+      "pairing_key": "40",
+      "simulation_path": "dataset\\simulation images\\Tuck\\040.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        28,
+        23,
+        51,
+        56
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 33,
+      "grid_columns": 23,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        23,
+        33
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 11.889312,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\040A_resized.png",
+      "source_stem": "040A",
+      "pairing_key": "40A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\040A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        28,
+        23,
+        51,
+        57
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 34,
+      "grid_columns": 23,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        23,
+        34
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 10.270323,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\041_resized.png",
+      "source_stem": "041",
+      "pairing_key": "41",
+      "simulation_path": "dataset\\simulation images\\Tuck\\041.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        29,
+        24,
+        51,
+        56
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 32,
+      "grid_columns": 22,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        22,
+        32
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.188307,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\041A_resized.png",
+      "source_stem": "041A",
+      "pairing_key": "41A",
+      "simulation_path": "dataset\\simulation images\\Tuck\\041A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        29,
+        24,
+        51,
+        56
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 32,
+      "grid_columns": 22,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        22,
+        32
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 14.077,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Tuck",
+      "source_path": "dataset\\stitch code patterns\\Tuck\\042_resized.png",
+      "source_stem": "042",
+      "pairing_key": "42",
+      "simulation_path": "dataset\\simulation images\\Tuck\\042.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        32,
+        29,
+        47,
+        51
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 22,
+      "grid_columns": 15,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        15,
+        22
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 27.889609,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\001_Rib_resized.png",
+      "source_stem": "001_Rib",
+      "pairing_key": "1",
+      "simulation_path": "dataset\\simulation images\\Hem\\1.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        22,
+        30,
+        60,
+        50
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 1,
+      "grid_columns": 19,
+      "cell_width": 2,
+      "cell_height": 20,
+      "usable_size": [
+        38,
+        20
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 0.0,
+      "max_quantization_distance": 0.0,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\002_Pearl Stitch_resized.png",
+      "source_stem": "002_Pearl Stitch",
+      "pairing_key": "2",
+      "simulation_path": "dataset\\simulation images\\Hem\\2.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        20,
+        30,
+        60,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 19,
+      "grid_columns": 1,
+      "cell_width": 40,
+      "cell_height": 1,
+      "usable_size": [
+        40,
+        19
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 0.0,
+      "max_quantization_distance": 0.0,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\003_Waffle_resized.png",
+      "source_stem": "003_Waffle",
+      "pairing_key": "3",
+      "simulation_path": "dataset\\simulation images\\Hem\\3.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        20,
+        30,
+        60,
+        50
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 20,
+      "grid_columns": 20,
+      "cell_width": 2,
+      "cell_height": 1,
+      "usable_size": [
+        40,
+        20
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 0.0,
+      "max_quantization_distance": 0.0,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\004_2x1Rib_resized.png",
+      "source_stem": "004_2x1Rib",
+      "pairing_key": "4",
+      "simulation_path": "dataset\\simulation images\\Hem\\4.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        20,
+        30,
+        58,
+        50
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 1,
+      "grid_columns": 38,
+      "cell_width": 1,
+      "cell_height": 20,
+      "usable_size": [
+        38,
+        20
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 0.0,
+      "max_quantization_distance": 0.0,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\005_Mesh_resized.png",
+      "source_stem": "005_Mesh",
+      "pairing_key": "5",
+      "simulation_path": "dataset\\simulation images\\Hem\\5.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        20,
+        30,
+        60,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 19,
+      "grid_columns": 40,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        40,
+        19
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 17.35466,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\006_resized.png",
+      "source_stem": "006",
+      "pairing_key": "6",
+      "simulation_path": "dataset\\simulation images\\Hem\\6.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        17,
+        34,
+        63,
+        45
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 11,
+      "grid_columns": 23,
+      "cell_width": 2,
+      "cell_height": 1,
+      "usable_size": [
+        46,
+        11
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.881767,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 0.964427,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 0.964427
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\007_resized.png",
+      "source_stem": "007",
+      "pairing_key": "7",
+      "simulation_path": "dataset\\simulation images\\Hem\\7.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        17,
+        33,
+        63,
+        46
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 13,
+      "grid_columns": 46,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        46,
+        13
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 21.961276,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\008_resized.png",
+      "source_stem": "008",
+      "pairing_key": "8",
+      "simulation_path": "dataset\\simulation images\\Hem\\8.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        16,
+        32,
+        64,
+        47
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 15,
+      "grid_columns": 48,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        48,
+        15
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 23.562594,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\008A_resized.png",
+      "source_stem": "008A",
+      "pairing_key": "8A",
+      "simulation_path": "dataset\\simulation images\\Hem\\8A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        16,
+        33,
+        64,
+        48
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 15,
+      "grid_columns": 48,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        48,
+        15
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 23.145554,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\009_resized.png",
+      "source_stem": "009",
+      "pairing_key": "9",
+      "simulation_path": "dataset\\simulation images\\Hem\\9.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        21,
+        36,
+        58,
+        43
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 7,
+      "grid_columns": 37,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        37,
+        7
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 26.72793,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\009A_resized.png",
+      "source_stem": "009A",
+      "pairing_key": "9A",
+      "simulation_path": "dataset\\simulation images\\Hem\\9A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        21,
+        36,
+        58,
+        43
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 7,
+      "grid_columns": 37,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        37,
+        7
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 26.524557,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\010_resized.png",
+      "source_stem": "010",
+      "pairing_key": "10",
+      "simulation_path": "dataset\\simulation images\\Hem\\10.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        21,
+        36,
+        58,
+        43
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 7,
+      "grid_columns": 37,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        37,
+        7
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 22.865057,
+      "max_quantization_distance": 42.825226,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\011_resized.png",
+      "source_stem": "011",
+      "pairing_key": "11",
+      "simulation_path": "dataset\\simulation images\\Hem\\11.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        21,
+        34,
+        60,
+        46
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 12,
+      "grid_columns": 39,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        39,
+        12
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 20.98076,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\012_resized.png",
+      "source_stem": "012",
+      "pairing_key": "12",
+      "simulation_path": "dataset\\simulation images\\Hem\\12.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        20,
+        30,
+        61,
+        49
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 19,
+      "grid_columns": 41,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        41,
+        19
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 19.797888,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\013_resized.png",
+      "source_stem": "013",
+      "pairing_key": "13",
+      "simulation_path": "dataset\\simulation images\\Hem\\13.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        21,
+        27,
+        58,
+        52
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 25,
+      "grid_columns": 37,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        37,
+        25
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 19.34221,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\014_resized.png",
+      "source_stem": "014",
+      "pairing_key": "14",
+      "simulation_path": "dataset\\simulation images\\Hem\\14.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        23,
+        29,
+        58,
+        51
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 22,
+      "grid_columns": 35,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        35,
+        22
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 18.887225,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\015_resized.png",
+      "source_stem": "015",
+      "pairing_key": "15",
+      "simulation_path": "dataset\\simulation images\\Hem\\15.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        21,
+        24,
+        59,
+        55
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 31,
+      "grid_columns": 38,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        38,
+        31
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.110901,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\016_resized.png",
+      "source_stem": "016",
+      "pairing_key": "16",
+      "simulation_path": "dataset\\simulation images\\Hem\\16.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        17,
+        23,
+        64,
+        55
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 32,
+      "grid_columns": 47,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        47,
+        32
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 21.000665,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\017_resized.png",
+      "source_stem": "017",
+      "pairing_key": "17",
+      "simulation_path": "dataset\\simulation images\\Hem\\17.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        17,
+        15,
+        64,
+        65
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 50,
+      "grid_columns": 47,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        47,
+        50
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 20.180136,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\018_resized.png",
+      "source_stem": "018",
+      "pairing_key": "18",
+      "simulation_path": "dataset\\simulation images\\Hem\\18.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        15,
+        14,
+        64,
+        65
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 51,
+      "grid_columns": 49,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        49,
+        51
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 20.967276,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\019_resized.png",
+      "source_stem": "019",
+      "pairing_key": "19",
+      "simulation_path": "dataset\\simulation images\\Hem\\19.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        17,
+        14,
+        64,
+        66
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 52,
+      "grid_columns": 47,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        47,
+        52
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 23.241439,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\020_resized.png",
+      "source_stem": "020",
+      "pairing_key": "20",
+      "simulation_path": "dataset\\simulation images\\Hem\\20.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        13,
+        1,
+        68,
+        78
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 77,
+      "grid_columns": 55,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        55,
+        77
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 21.148957,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\021_resized.png",
+      "source_stem": "021",
+      "pairing_key": "21",
+      "simulation_path": "dataset\\simulation images\\Hem\\21.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        19,
+        20,
+        61,
+        59
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 39,
+      "grid_columns": 42,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        42,
+        39
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 10.834418,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\022_resized.png",
+      "source_stem": "022",
+      "pairing_key": "22",
+      "simulation_path": "dataset\\simulation images\\Hem\\22.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        12,
+        21,
+        68,
+        59
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 38,
+      "grid_columns": 56,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        56,
+        38
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 11.447247,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\023_resized.png",
+      "source_stem": "023",
+      "pairing_key": "23",
+      "simulation_path": "dataset\\simulation images\\Hem\\23.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        21,
+        80,
+        57
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 36,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        36
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 14.264174,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\024_resized.png",
+      "source_stem": "024",
+      "pairing_key": "24",
+      "simulation_path": "dataset\\simulation images\\Hem\\24.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        19,
+        17,
+        61,
+        61
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 44,
+      "grid_columns": 42,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        42,
+        44
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.91523,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\025_resized.png",
+      "source_stem": "025",
+      "pairing_key": "25",
+      "simulation_path": "dataset\\simulation images\\Hem\\25.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        13,
+        12,
+        67,
+        67
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 55,
+      "grid_columns": 54,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        54,
+        55
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.972971,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\026_resized.png",
+      "source_stem": "026",
+      "pairing_key": "26",
+      "simulation_path": "dataset\\simulation images\\Hem\\26.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        11,
+        12,
+        68,
+        67
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 55,
+      "grid_columns": 57,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        57,
+        55
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.131291,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\027_resized.png",
+      "source_stem": "027",
+      "pairing_key": "27",
+      "simulation_path": "dataset\\simulation images\\Hem\\27.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        5,
+        80,
+        74
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 69,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        69
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 11.494454,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\028_resized.png",
+      "source_stem": "028",
+      "pairing_key": "28",
+      "simulation_path": "dataset\\simulation images\\Hem\\28.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        4,
+        0,
+        76,
+        79
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 79,
+      "grid_columns": 72,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        72,
+        79
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 19.40638,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\029_resized.png",
+      "source_stem": "029",
+      "pairing_key": "29",
+      "simulation_path": "dataset\\simulation images\\Hem\\29.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        0,
+        80,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.078494,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\030_resized.png",
+      "source_stem": "030",
+      "pairing_key": "30",
+      "simulation_path": "dataset\\simulation images\\Hem\\30.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        0,
+        80,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.682191,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\031_resized.png",
+      "source_stem": "031",
+      "pairing_key": "31",
+      "simulation_path": "dataset\\simulation images\\Hem\\31.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        0,
+        80,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.566828,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\032_resized.png",
+      "source_stem": "032",
+      "pairing_key": "32",
+      "simulation_path": "dataset\\simulation images\\Hem\\32.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        20,
+        16,
+        60,
+        63
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 47,
+      "grid_columns": 40,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        40,
+        47
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.41315,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\033_resized.png",
+      "source_stem": "033",
+      "pairing_key": "33",
+      "simulation_path": "dataset\\simulation images\\Hem\\33.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        16,
+        9,
+        64,
+        70
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 61,
+      "grid_columns": 48,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        48,
+        61
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 14.026614,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\034_resized.png",
+      "source_stem": "034",
+      "pairing_key": "34",
+      "simulation_path": "dataset\\simulation images\\Hem\\34.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        16,
+        11,
+        64,
+        69
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 58,
+      "grid_columns": 48,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        48,
+        58
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.526535,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\035_resized.png",
+      "source_stem": "035",
+      "pairing_key": "35",
+      "simulation_path": "dataset\\simulation images\\Hem\\35.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        17,
+        12,
+        62,
+        69
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 57,
+      "grid_columns": 45,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        45,
+        57
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 17.305173,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\036_resized.png",
+      "source_stem": "036",
+      "pairing_key": "36",
+      "simulation_path": "dataset\\simulation images\\Hem\\36.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        18,
+        6,
+        62,
+        73
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 67,
+      "grid_columns": 44,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        44,
+        67
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.007065,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\037_resized.png",
+      "source_stem": "037",
+      "pairing_key": "37",
+      "simulation_path": "dataset\\simulation images\\Hem\\37.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        16,
+        9,
+        64,
+        71
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 62,
+      "grid_columns": 48,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        48,
+        62
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.403598,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\037A_resized.png",
+      "source_stem": "037A",
+      "pairing_key": "37A",
+      "simulation_path": "dataset\\simulation images\\Hem\\37A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        16,
+        9,
+        64,
+        71
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 62,
+      "grid_columns": 48,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        48,
+        62
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.403598,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\038_resized.png",
+      "source_stem": "038",
+      "pairing_key": "38",
+      "simulation_path": "dataset\\simulation images\\Hem\\38.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        13,
+        1,
+        67,
+        79
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 78,
+      "grid_columns": 54,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        54,
+        78
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.941663,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\039_resized.png",
+      "source_stem": "039",
+      "pairing_key": "39",
+      "simulation_path": "dataset\\simulation images\\Hem\\39.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        13,
+        0,
+        68,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 55,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        55,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.87697,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\039A_resized.png",
+      "source_stem": "039A",
+      "pairing_key": "39A",
+      "simulation_path": "dataset\\simulation images\\Hem\\39A.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        14,
+        0,
+        66,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 52,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        52,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.328538,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\040_resized.png",
+      "source_stem": "040",
+      "pairing_key": "40",
+      "simulation_path": "dataset\\simulation images\\Hem\\40.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        10,
+        0,
+        70,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 60,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        60,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.160948,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\041_resized.png",
+      "source_stem": "041",
+      "pairing_key": "41",
+      "simulation_path": "dataset\\simulation images\\Hem\\41.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        13,
+        14,
+        67,
+        65
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 51,
+      "grid_columns": 54,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        54,
+        51
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 11.437938,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\042_resized.png",
+      "source_stem": "042",
+      "pairing_key": "42",
+      "simulation_path": "dataset\\simulation images\\Hem\\42.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        26,
+        29,
+        54,
+        62
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 33,
+      "grid_columns": 28,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        28,
+        33
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 18.393192,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\043_resized.png",
+      "source_stem": "043",
+      "pairing_key": "43",
+      "simulation_path": "dataset\\simulation images\\Hem\\43.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        0,
+        80,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 10.390794,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\044_resized.png",
+      "source_stem": "044",
+      "pairing_key": "44",
+      "simulation_path": "dataset\\simulation images\\Hem\\44.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        7,
+        0,
+        73,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 66,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        66,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 15.341788,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\045_resized.png",
+      "source_stem": "045",
+      "pairing_key": "45",
+      "simulation_path": "dataset\\simulation images\\Hem\\45.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        4,
+        0,
+        76,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 72,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        72,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 11.766854,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\046_resized.png",
+      "source_stem": "046",
+      "pairing_key": "46",
+      "simulation_path": "dataset\\simulation images\\Hem\\46.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        0,
+        79,
+        79
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 79,
+      "grid_columns": 79,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        79,
+        79
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 11.072376,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\047_resized.png",
+      "source_stem": "047",
+      "pairing_key": "47",
+      "simulation_path": "dataset\\simulation images\\Hem\\47.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        0,
+        80,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.727846,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\048_resized.png",
+      "source_stem": "048",
+      "pairing_key": "48",
+      "simulation_path": "dataset\\simulation images\\Hem\\48.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        0,
+        80,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 16.137374,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\049_resized.png",
+      "source_stem": "049",
+      "pairing_key": "49",
+      "simulation_path": "dataset\\simulation images\\Hem\\49.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        2,
+        0,
+        78,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 76,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        76,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.891828,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\050_resized.png",
+      "source_stem": "050",
+      "pairing_key": "50",
+      "simulation_path": "dataset\\simulation images\\Hem\\50.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        7,
+        0,
+        72,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 65,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        65,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 20.589462,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\051_resized.png",
+      "source_stem": "051",
+      "pairing_key": "51",
+      "simulation_path": "dataset\\simulation images\\Hem\\51.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        0,
+        0,
+        80,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 80,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        80,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 14.166333,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\052_resized.png",
+      "source_stem": "052",
+      "pairing_key": "52",
+      "simulation_path": "dataset\\simulation images\\Hem\\52.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        22,
+        23,
+        58,
+        57
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 34,
+      "grid_columns": 36,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        36,
+        34
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 13.18784,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\053_resized.png",
+      "source_stem": "053",
+      "pairing_key": "53",
+      "simulation_path": "dataset\\simulation images\\Hem\\53.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        20,
+        20,
+        59,
+        60
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 40,
+      "grid_columns": 39,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        39,
+        40
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 19.632783,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\054_resized.png",
+      "source_stem": "054",
+      "pairing_key": "54",
+      "simulation_path": "dataset\\simulation images\\Hem\\54.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        10,
+        0,
+        70,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 60,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        60,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 18.557461,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    },
+    {
+      "category": "Hem",
+      "source_path": "dataset\\stitch code patterns\\Hem\\055_resized.png",
+      "source_stem": "055",
+      "pairing_key": "55",
+      "simulation_path": "dataset\\simulation images\\Hem\\55.png",
+      "source_size": [
+        80,
+        80
+      ],
+      "crop_box": [
+        7,
+        0,
+        73,
+        80
+      ],
+      "background_color": "#FF0000",
+      "grid_rows": 80,
+      "grid_columns": 66,
+      "cell_width": 1,
+      "cell_height": 1,
+      "usable_size": [
+        66,
+        80
+      ],
+      "trimmed_width": 0,
+      "trimmed_height": 0,
+      "trimmed_pixel_count": 0,
+      "warnings": [],
+      "mean_quantization_distance": 12.172319,
+      "max_quantization_distance": 45.254834,
+      "average_cell_purity": 1.0,
+      "ambiguous_cell_count": 0,
+      "ambiguous_cells": [],
+      "exact_pixel_match_ratio": 1.0
+    }
+  ],
+  "by_category": {
+    "Tuck": {
+      "samples": 66,
+      "ambiguous_cells": 0,
+      "mean_cell_purity": 0.998865,
+      "mean_exact_pixel_match_ratio": 0.998865
+    },
+    "Hem": {
+      "samples": 59,
+      "ambiguous_cells": 0,
+      "mean_cell_purity": 0.999397,
+      "mean_exact_pixel_match_ratio": 0.999397
+    }
+  },
+  "ar_exported_samples": 125
+}

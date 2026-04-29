@@ -1,0 +1,16 @@
+{
+  "export_root": "outputs\\ar-train-th",
+  "output_dir": "results\\pixelsnail-formal",
+  "device": "cpu",
+  "grid_vocab_size": 163,
+  "dataset_size": 125,
+  "train_loss": 1.6859061903953552,
+  "eval_loss": 5.0145386047363285,
+  "epochs_completed": 3,
+  "best_epoch": 3,
+  "best_metric_name": "eval_loss",
+  "best_metric_value": 5.0145386047363285,
+  "best_checkpoint_path": "results\\pixelsnail-formal\\best_checkpoint.pt",
+  "metrics_history_path": "results\\pixelsnail-formal\\metrics_history.json",
+  "generated_samples_path": "results\\pixelsnail-formal\\generated_grids.json"
+}

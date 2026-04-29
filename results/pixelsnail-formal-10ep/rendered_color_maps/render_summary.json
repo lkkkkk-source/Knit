@@ -1,0 +1,7 @@
+{
+  "generated_json": "results\\pixelsnail-formal-10ep\\generated_grids.json",
+  "vocab_json": "outputs\\ar-train-th\\ar_vocab.json",
+  "output_dir": "results\\pixelsnail-formal-10ep\\rendered_color_maps",
+  "samples": 1,
+  "scale": 16
+}

@@ -1,0 +1,2 @@
+category,source_stem,simulation_path,grid_rows,grid_columns,cell_width,cell_height,average_cell_purity,ambiguous_cell_count,exact_pixel_match_ratio
+Hem,001_Rib,dataset\simulation images\Hem\1.png,1,19,2,20,1.0,0,1.0

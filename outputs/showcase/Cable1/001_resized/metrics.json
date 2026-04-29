@@ -1,0 +1,36 @@
+{
+  "category": "Cable1",
+  "source_path": "dataset\\stitch code patterns\\Cable1\\001_resized.png",
+  "source_stem": "001",
+  "pairing_key": "1",
+  "simulation_path": "dataset\\simulation images\\Cable1\\1.png",
+  "source_size": [
+    80,
+    80
+  ],
+  "crop_box": [
+    37,
+    30,
+    42,
+    50
+  ],
+  "background_color": "#FF0000",
+  "grid_rows": 20,
+  "grid_columns": 5,
+  "cell_width": 1,
+  "cell_height": 1,
+  "usable_size": [
+    5,
+    20
+  ],
+  "trimmed_width": 0,
+  "trimmed_height": 0,
+  "trimmed_pixel_count": 0,
+  "warnings": [],
+  "mean_quantization_distance": 16.932808,
+  "max_quantization_distance": 71.554175,
+  "average_cell_purity": 1.0,
+  "ambiguous_cell_count": 0,
+  "ambiguous_cells": [],
+  "exact_pixel_match_ratio": 1.0
+}

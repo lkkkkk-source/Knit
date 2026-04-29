@@ -1,0 +1,7 @@
+{
+  "generated_json": "results\\pixelcnn-formal\\generated_grids.json",
+  "vocab_json": "outputs\\ar-train-th\\ar_vocab.json",
+  "output_dir": "results\\pixelcnn-formal\\rendered_color_maps",
+  "samples": 2,
+  "scale": 16
+}

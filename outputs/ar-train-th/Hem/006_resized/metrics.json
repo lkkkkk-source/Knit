@@ -1,0 +1,36 @@
+{
+  "category": "Hem",
+  "source_path": "dataset\\stitch code patterns\\Hem\\006_resized.png",
+  "source_stem": "006",
+  "pairing_key": "6",
+  "simulation_path": "dataset\\simulation images\\Hem\\6.png",
+  "source_size": [
+    80,
+    80
+  ],
+  "crop_box": [
+    17,
+    34,
+    63,
+    45
+  ],
+  "background_color": "#FF0000",
+  "grid_rows": 11,
+  "grid_columns": 23,
+  "cell_width": 2,
+  "cell_height": 1,
+  "usable_size": [
+    46,
+    11
+  ],
+  "trimmed_width": 0,
+  "trimmed_height": 0,
+  "trimmed_pixel_count": 0,
+  "warnings": [],
+  "mean_quantization_distance": 16.881767,
+  "max_quantization_distance": 45.254834,
+  "average_cell_purity": 0.964427,
+  "ambiguous_cell_count": 0,
+  "ambiguous_cells": [],
+  "exact_pixel_match_ratio": 0.964427
+}

@@ -1,0 +1,10 @@
+{
+  "export_root": "outputs\\ar-smoke",
+  "output_dir": "results\\pixelcnn-smoke",
+  "device": "cpu",
+  "grid_vocab_size": 163,
+  "dataset_size": 2,
+  "train_loss": 5.1048784255981445,
+  "eval_loss": 5.09375,
+  "generated_samples_path": "results\\pixelcnn-smoke\\generated_grids.json"
+}
