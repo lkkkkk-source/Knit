@@ -20,7 +20,7 @@ The first rebuild target is:
 
 This branch now includes a minimal scaffold under `knit_decode/parser_t/`:
 
-- `dataset.py`: manifest loading and parser dataset skeleton
+- `dataset.py`: manifest loading for `simulation image -> stitch-code color-map` supervision
 - `losses.py`: Inverse-Knitting-style shift-tolerant cross-entropy
 - `model.py`: lightweight dense prediction baseline
 - `cli.py`: manifest builder entrypoint
@@ -39,4 +39,9 @@ python -m pip install -e .[train]
 knit-parse-t build-manifest --dataset-root dataset_complete --output-path parser_t/manifest.jsonl
 ```
 
-This only creates a starter manifest. You still need to generate topology target JSON files under `parser_t/targets/`.
+The first practical experiment is:
+
+- input: `dataset_complete/simulation images/...`
+- supervision target: paired `dataset_complete/stitch code patterns/...`
+
+So this first version tests whether the model can recover the stitch-code color topology raster from a simulation image.

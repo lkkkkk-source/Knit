@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 from typing import TypedDict
 
 from PIL import Image
@@ -14,70 +15,27 @@ JsonObject = dict[str, object]
 class ParserSample(TypedDict):
     sample_id: str
     image_path: str
-    topo_path: str
+    target_path: str
     category: str
-
-
-class ParserBatchItem(TypedDict):
-    sample_id: str
-    category: str
-    image: object
-    topo_ids: object
-    rows: int
-    columns: int
 
 
 @dataclass(frozen=True)
-class TopologyTarget:
+class SegmentationTarget:
     sample_id: str
     category: str
     image_path: Path
-    topo_path: Path
-    rows: int
-    columns: int
-    topo_ids: list[list[int]]
+    target_path: Path
 
 
-def _read_json(path: Path) -> JsonObject:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"Expected JSON object in {path}")
-    return payload
+_HEM_PREFIX_RE = re.compile(r"^(\d+[A-Za-z]*)")
 
 
-def _load_topology_target(sample: ParserSample, root: Path) -> TopologyTarget:
-    image_path = root / sample["image_path"]
-    topo_path = root / sample["topo_path"]
-    payload = _read_json(topo_path)
-    rows = payload.get("rows")
-    columns = payload.get("columns")
-    grid = payload.get("grid")
-    if not isinstance(rows, int) or not isinstance(columns, int) or not isinstance(grid, list):
-        raise ValueError(f"Invalid topology grid payload at {topo_path}")
-
-    topo_ids: list[list[int]] = []
-    for row in grid:
-        if not isinstance(row, list):
-            raise ValueError(f"Invalid topology row in {topo_path}")
-        parsed_row: list[int] = []
-        for token in row:
-            if not isinstance(token, int):
-                raise ValueError(f"Invalid topology token in {topo_path}: {token!r}")
-            parsed_row.append(token)
-        topo_ids.append(parsed_row)
-
-    if len(topo_ids) != rows or any(len(row) != columns for row in topo_ids):
-        raise ValueError(f"Topology shape mismatch in {topo_path}")
-
-    return TopologyTarget(
-        sample_id=sample["sample_id"],
-        category=sample["category"],
-        image_path=image_path,
-        topo_path=topo_path,
-        rows=rows,
-        columns=columns,
-        topo_ids=topo_ids,
-    )
+def _normalize_sim_stem(category: str, stem: str) -> str:
+    if category == "Hem":
+        match = _HEM_PREFIX_RE.match(stem)
+        if match:
+            return match.group(1)
+    return stem
 
 
 def load_parser_manifest(path: str | Path) -> list[ParserSample]:
@@ -89,14 +47,14 @@ def load_parser_manifest(path: str | Path) -> list[ParserSample]:
         payload = json.loads(line)
         if not isinstance(payload, dict):
             raise ValueError(f"Expected JSON object line in {manifest_path}")
-        required = ("sample_id", "image_path", "topo_path", "category")
+        required = ("sample_id", "image_path", "target_path", "category")
         if any(not isinstance(payload.get(key), str) for key in required):
             raise ValueError(f"Invalid parser sample entry in {manifest_path}: {payload!r}")
         rows.append(
             {
                 "sample_id": str(payload["sample_id"]),
                 "image_path": str(payload["image_path"]),
-                "topo_path": str(payload["topo_path"]),
+                "target_path": str(payload["target_path"]),
                 "category": str(payload["category"]),
             }
         )
@@ -114,18 +72,21 @@ def build_parser_manifest_from_dataset_complete(dataset_root: str | Path, output
         if not category_dir.is_dir():
             continue
         category = category_dir.name
+        stitch_dir = stitch_root / category
+        if not stitch_dir.exists():
+            continue
+        stitch_index = {path.stem: path for path in stitch_dir.glob("*.png")}
         for image_path in sorted(category_dir.glob("*.png")):
-            topo_name = f"{image_path.stem}_topo.json"
-            topo_path = output_path.parent / "targets" / category / topo_name
-            stitch_candidate = stitch_root / category / f"{image_path.stem}_resized.png"
-            if not stitch_candidate.exists():
+            normalized = _normalize_sim_stem(category, image_path.stem)
+            stitch_candidate = stitch_index.get(f"{normalized}_resized")
+            if stitch_candidate is None:
                 continue
             manifest_rows.append(
                 {
                     "sample_id": f"{category}/{image_path.stem}",
                     "category": category,
                     "image_path": str(image_path.relative_to(output_path.parent)).replace("\\", "/"),
-                    "topo_path": str(topo_path.relative_to(output_path.parent)).replace("\\", "/"),
+                    "target_path": str(stitch_candidate.relative_to(output_path.parent)).replace("\\", "/"),
                 }
             )
 
@@ -146,12 +107,16 @@ class SimulationTopologyDataset:
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, index: int) -> TopologyTarget:
+    def __getitem__(self, index: int) -> SegmentationTarget:
         sample = self.samples[index]
-        return _load_topology_target(sample, self.root)
+        return SegmentationTarget(
+            sample_id=sample["sample_id"],
+            category=sample["category"],
+            image_path=self.root / sample["image_path"],
+            target_path=self.root / sample["target_path"],
+        )
 
     @staticmethod
     def load_image(path: Path) -> Image.Image:
         with Image.open(path) as image:
             return image.convert("RGB")
-
