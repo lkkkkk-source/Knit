@@ -7,3 +7,4 @@
 /results/
 __pycache__/
 *.py[cod]
+/knit_decode.egg-info/
