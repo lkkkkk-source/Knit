@@ -13,7 +13,14 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .pixelcnn_baseline import _load_external_module, _repo_root, decode_contiguous_grid
-from .pixelcnn_dataset import GridTokenMap, KnitGridDataset, build_knit_grid_dataloader
+from .pixelcnn_dataset import (
+    GridTokenMap,
+    KnitGridDataset,
+    build_knit_grid_dataloader,
+    build_knit_grid_dataloader_from_dataset,
+    split_dataset_indices,
+    subset_knit_grid_dataset,
+)
 
 
 def _external_pixelsnail_paths() -> tuple[Path, Path]:
@@ -72,6 +79,7 @@ class PixelSnailBaselineConfig:
     export_root: str
     output_dir: str
     batch_size: int = 1
+    val_fraction: float = 0.1
     n_epochs: int = 1
     learning_rate: float = 5e-4
     learning_rate_decay: float = 0.999995
@@ -140,6 +148,41 @@ def _build_model_and_optimizer(
     optimizer = optim_module.Adam(model.parameters(), lr=config.learning_rate, betas=(0.95, 0.9995), polyak=config.polyak, eps=1e-5)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, config.learning_rate_decay)
     return model, optimizer, scheduler, token_map, dataset
+
+
+def _build_split_dataloaders(
+    config: PixelSnailBaselineConfig,
+    export_root: Path,
+    dataset: KnitGridDataset,
+) -> tuple[Any, Any | None]:
+    if config.train and config.evaluate:
+        train_indices, val_indices = split_dataset_indices(len(dataset), config.val_fraction, config.seed)
+        train_dataset = subset_knit_grid_dataset(dataset, train_indices)
+        val_dataset = subset_knit_grid_dataset(dataset, val_indices)
+        train_loader = build_knit_grid_dataloader_from_dataset(
+            train_dataset,
+            batch_size=config.batch_size,
+            shuffle=True,
+            num_workers=config.num_workers,
+            ignore_index=config.ignore_index,
+        )
+        val_loader = build_knit_grid_dataloader_from_dataset(
+            val_dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            num_workers=config.num_workers,
+            ignore_index=config.ignore_index,
+        )
+        return train_loader, val_loader
+
+    dataloader = build_knit_grid_dataloader(
+        export_root,
+        batch_size=config.batch_size,
+        shuffle=config.train,
+        num_workers=config.num_workers,
+        ignore_index=config.ignore_index,
+    )
+    return dataloader, None
 
 
 def _run_epoch(
@@ -217,13 +260,7 @@ def run_pixelsnail_baseline(config: PixelSnailBaselineConfig) -> dict[str, objec
         if scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-    dataloader = build_knit_grid_dataloader(
-        export_root,
-        batch_size=config.batch_size,
-        shuffle=config.train,
-        num_workers=config.num_workers,
-        ignore_index=config.ignore_index,
-    )
+    train_dataloader, val_dataloader = _build_split_dataloaders(config, export_root, dataset)
 
     summary: dict[str, object] = {
         "export_root": str(export_root),
@@ -231,6 +268,9 @@ def run_pixelsnail_baseline(config: PixelSnailBaselineConfig) -> dict[str, objec
         "device": str(device),
         "grid_vocab_size": token_map.vocab_size,
         "dataset_size": len(dataset),
+        "train_dataset_size": len(train_dataloader.dataset),
+        "val_dataset_size": len(val_dataloader.dataset) if val_dataloader is not None else 0,
+        "val_fraction": config.val_fraction,
         "train_loss": None,
         "eval_loss": None,
         "epochs_completed": 0,
@@ -251,12 +291,13 @@ def run_pixelsnail_baseline(config: PixelSnailBaselineConfig) -> dict[str, objec
         best_checkpoint_path = output_dir / "best_checkpoint.pt"
         latest_checkpoint_path = output_dir / "checkpoint.pt"
         for epoch_index in range(config.n_epochs):
-            train_loss = _run_epoch(model, dataloader, optimizer, scheduler, device, True, config.ignore_index)
+            train_loss = _run_epoch(model, train_dataloader, optimizer, scheduler, device, True, config.ignore_index)
             epoch_eval_loss: float | None = None
             if config.evaluate:
+                eval_dataloader = val_dataloader if val_dataloader is not None else train_dataloader
                 used_ema = _swap_ema_if_available(optimizer)
                 try:
-                    epoch_eval_loss = _run_epoch(model, dataloader, optimizer, None, device, False, config.ignore_index)
+                    epoch_eval_loss = _run_epoch(model, eval_dataloader, optimizer, None, device, False, config.ignore_index)
                 finally:
                     if used_ema:
                         _swap_ema_if_available(optimizer)
@@ -293,13 +334,14 @@ def run_pixelsnail_baseline(config: PixelSnailBaselineConfig) -> dict[str, objec
         summary["metrics_history_path"] = str(history_path)
 
     if config.evaluate:
+        eval_dataloader = val_dataloader if val_dataloader is not None else train_dataloader
         if config.train and summary["best_checkpoint_path"]:
             _load_checkpoint_weights(Path(str(summary["best_checkpoint_path"])), model, device)
-            summary["eval_loss"] = _run_epoch(model, dataloader, optimizer, None, device, False, config.ignore_index)
+            summary["eval_loss"] = _run_epoch(model, eval_dataloader, optimizer, None, device, False, config.ignore_index)
         else:
             used_ema = _swap_ema_if_available(optimizer)
             try:
-                summary["eval_loss"] = _run_epoch(model, dataloader, optimizer, None, device, False, config.ignore_index)
+                summary["eval_loss"] = _run_epoch(model, eval_dataloader, optimizer, None, device, False, config.ignore_index)
             finally:
                 if used_ema:
                     _swap_ema_if_available(optimizer)
@@ -341,6 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument("--export-root", type=Path, required=True)
     _ = parser.add_argument("--output-dir", type=Path, required=True)
     _ = parser.add_argument("--batch-size", type=int, default=1)
+    _ = parser.add_argument("--val-fraction", type=float, default=0.1, help="Validation split fraction used when both --train and --evaluate are enabled.")
     _ = parser.add_argument("--n-epochs", type=int, default=10)
     _ = parser.add_argument("--learning-rate", type=float, default=5e-4)
     _ = parser.add_argument("--learning-rate-decay", type=float, default=0.999995)
@@ -372,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
         export_root=str(args.export_root),
         output_dir=str(args.output_dir),
         batch_size=args.batch_size,
+        val_fraction=args.val_fraction,
         n_epochs=args.n_epochs,
         learning_rate=args.learning_rate,
         learning_rate_decay=args.learning_rate_decay,

@@ -37,17 +37,29 @@ def _create_export_root(root: Path) -> Path:
             "duplicate_colors": {},
         },
     )
-    manifest = {
-        "sample_id": "Tuck/001_resized",
-        "sample_meta": {"category": "Tuck"},
-        "ar_id_grid_path": "Tuck/001_resized/ar_id_grid.json",
-        "ar_token_sequence_path": "Tuck/001_resized/ar_token_sequence.json",
-        "ar_token_ids_path": "Tuck/001_resized/ar_token_ids.txt",
-        "rows": 2,
-        "columns": 2,
-        "sequence_length": 6,
-    }
-    _write_text(export_root / "ar_manifest.jsonl", json.dumps(manifest) + "\n")
+    manifests = [
+        {
+            "sample_id": "Tuck/001_resized",
+            "sample_meta": {"category": "Tuck"},
+            "ar_id_grid_path": "Tuck/001_resized/ar_id_grid.json",
+            "ar_token_sequence_path": "Tuck/001_resized/ar_token_sequence.json",
+            "ar_token_ids_path": "Tuck/001_resized/ar_token_ids.txt",
+            "rows": 2,
+            "columns": 2,
+            "sequence_length": 6,
+        },
+        {
+            "sample_id": "Hem/002_resized",
+            "sample_meta": {"category": "Hem"},
+            "ar_id_grid_path": "Hem/002_resized/ar_id_grid.json",
+            "ar_token_sequence_path": "Hem/002_resized/ar_token_sequence.json",
+            "ar_token_ids_path": "Hem/002_resized/ar_token_ids.txt",
+            "rows": 2,
+            "columns": 2,
+            "sequence_length": 6,
+        },
+    ]
+    _write_text(export_root / "ar_manifest.jsonl", "\n".join(json.dumps(manifest) for manifest in manifests) + "\n")
     _write_json(
         export_root / "Tuck" / "001_resized" / "ar_id_grid.json",
         {"rows": 2, "columns": 2, "ambiguous_id": -1, "grid": [[249, 95], [5, -1]]},
@@ -57,6 +69,15 @@ def _create_export_root(root: Path) -> Path:
         {"flatten_order": "row_major", "row_sep_token": -2, "eos_token": -3, "bos_token": None, "sequence": [249, 95, -2, 5, -1, -3]},
     )
     _write_text(export_root / "Tuck" / "001_resized" / "ar_token_ids.txt", "249 95 -2 5 -1 -3\n")
+    _write_json(
+        export_root / "Hem" / "002_resized" / "ar_id_grid.json",
+        {"rows": 2, "columns": 2, "ambiguous_id": -1, "grid": [[95, 249], [-1, 5]]},
+    )
+    _write_json(
+        export_root / "Hem" / "002_resized" / "ar_token_sequence.json",
+        {"flatten_order": "row_major", "row_sep_token": -2, "eos_token": -3, "bos_token": None, "sequence": [95, 249, -2, -1, 5, -3]},
+    )
+    _write_text(export_root / "Hem" / "002_resized" / "ar_token_ids.txt", "95 249 -2 -1 5 -3\n")
     return export_root
 
 
@@ -75,6 +96,7 @@ class PixelCnnBaselineTests(unittest.TestCase):
                 export_root=str(export_root),
                 output_dir=str(output_dir),
                 batch_size=1,
+                val_fraction=0.5,
                 n_epochs=1,
                 n_channels=4,
                 n_out_conv_channels=8,
@@ -94,6 +116,9 @@ class PixelCnnBaselineTests(unittest.TestCase):
             self.assertIsNotNone(summary["train_loss"])
             self.assertIsNotNone(summary["eval_loss"])
             self.assertEqual(summary["grid_vocab_size"], 5)
+            self.assertEqual(summary["dataset_size"], 2)
+            self.assertEqual(summary["train_dataset_size"], 1)
+            self.assertEqual(summary["val_dataset_size"], 1)
             self.assertTrue((output_dir / "checkpoint.pt").exists())
             self.assertTrue((output_dir / "best_checkpoint.pt").exists())
             self.assertTrue((output_dir / "metrics_history.json").exists())

@@ -4,11 +4,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import random
 from typing import TypedDict, cast
 
 import torch
 from torch import Tensor
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from .ar_dataset import ArSampleRecord, JsonObject, load_ar_manifest
 
@@ -236,9 +237,60 @@ def build_knit_grid_dataloader(
     ignore_index: int = -100,
 ) -> DataLoader[KnitGridItem]:
     dataset = KnitGridDataset(export_root)
+    return build_knit_grid_dataloader_from_dataset(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        ignore_index=ignore_index,
+    )
+
+
+def _dataset_token_map(dataset: Dataset[KnitGridItem]) -> GridTokenMap:
+    token_map = getattr(dataset, "token_map", None)
+    if token_map is not None:
+        return cast(GridTokenMap, token_map)
+    parent_dataset = getattr(dataset, "dataset", None)
+    if parent_dataset is not None:
+        return _dataset_token_map(cast(Dataset[KnitGridItem], parent_dataset))
+    raise AttributeError("Dataset does not expose a token_map")
+
+
+def build_knit_grid_dataloader_from_dataset(
+    dataset: Dataset[KnitGridItem],
+    batch_size: int,
+    shuffle: bool = False,
+    num_workers: int = 0,
+    ignore_index: int = -100,
+) -> DataLoader[KnitGridItem]:
+    token_map = _dataset_token_map(dataset)
     collator = KnitGridBatchCollator(
-        pad_class_id=dataset.token_map.pad_class_id,
-        grid_vocab_size=dataset.token_map.vocab_size,
+        pad_class_id=token_map.pad_class_id,
+        grid_vocab_size=token_map.vocab_size,
         ignore_index=ignore_index,
     )
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=collator)
+
+
+def split_dataset_indices(dataset_size: int, val_fraction: float, seed: int) -> tuple[list[int], list[int]]:
+    if dataset_size < 2:
+        raise ValueError("Need at least 2 samples to create a train/validation split")
+    if not 0.0 < val_fraction < 1.0:
+        raise ValueError(f"val_fraction must be between 0 and 1, received {val_fraction}")
+
+    indices = list(range(dataset_size))
+    random.Random(seed).shuffle(indices)
+    val_size = max(1, int(round(dataset_size * val_fraction)))
+    val_size = min(val_size, dataset_size - 1)
+    train_size = dataset_size - val_size
+    if train_size < 1 or val_size < 1:
+        raise ValueError(
+            f"Could not create a non-empty train/validation split: dataset_size={dataset_size}, val_fraction={val_fraction}"
+        )
+    train_indices = indices[:train_size]
+    val_indices = indices[train_size:]
+    return train_indices, val_indices
+
+
+def subset_knit_grid_dataset(dataset: KnitGridDataset, indices: Sequence[int]) -> Subset[KnitGridItem]:
+    return Subset(dataset, list(indices))

@@ -1,2 +1,9 @@
 /dataset/
 /dataset2/
+/dataset_complete/
+/dataset_paired/
+/merged_dataset/
+/outputs/
+/results/
+__pycache__/
+*.py[cod]

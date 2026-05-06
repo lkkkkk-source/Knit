@@ -8,7 +8,7 @@ from typing import cast
 
 import torch
 
-from knit_decode.pixelcnn_dataset import KnitGridBatchCollator, KnitGridDataset, KnitGridItem, build_knit_grid_dataloader, collate_knit_grid_batch, load_grid_token_map
+from knit_decode.pixelcnn_dataset import KnitGridBatchCollator, KnitGridDataset, KnitGridItem, build_knit_grid_dataloader, collate_knit_grid_batch, load_grid_token_map, split_dataset_indices
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -68,6 +68,13 @@ def _create_export_root(root: Path) -> Path:
 
 
 class PixelCnnDatasetTests(unittest.TestCase):
+    def test_split_dataset_indices_creates_non_empty_deterministic_partitions(self) -> None:
+        train_indices, val_indices = split_dataset_indices(dataset_size=10, val_fraction=0.2, seed=7)
+        self.assertEqual((train_indices, val_indices), split_dataset_indices(dataset_size=10, val_fraction=0.2, seed=7))
+        self.assertEqual(len(train_indices), 8)
+        self.assertEqual(len(val_indices), 2)
+        self.assertEqual(sorted(train_indices + val_indices), list(range(10)))
+
     def test_load_grid_token_map_excludes_sequence_only_special_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             export_root = _create_export_root(Path(temp_dir))
