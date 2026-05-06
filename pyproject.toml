@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "knit-decode"
 version = "0.1.0"
-description = "Minimal stitch-code decoding pipeline for knit QA artifacts"
+description = "Research workspace for knit simulation-image generation and topology parsing"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-knit-decode = "knit_decode.cli:main"
+knit-parse-t = "knit_decode.parser_t.cli:main"
 
 [project.optional-dependencies]
 train = [
