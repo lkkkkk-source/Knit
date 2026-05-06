@@ -171,7 +171,7 @@ class SimulationTopologyDataset:
         palette: Palette | None = None,
     ) -> None:
         self.manifest_path = Path(manifest_path)
-        self.root = Path(root) if root is not None else self.manifest_path.parent
+        self.root = Path(root) if root is not None else self._infer_root(self.manifest_path)
         self.image_size = image_size
         raw_samples = load_parser_manifest(self.manifest_path)
         self.samples = [
@@ -184,6 +184,22 @@ class SimulationTopologyDataset:
             for sample in raw_samples
         ]
         self.palette = palette if palette is not None else build_palette(self.samples)
+
+    @staticmethod
+    def _infer_root(manifest_path: Path) -> Path:
+        direct_root = manifest_path.parent
+        split_root = manifest_path.parent.parent
+        probe = load_parser_manifest(manifest_path)
+        if not probe:
+            return direct_root
+        sample = probe[0]
+        direct_candidate = direct_root / sample["target_path"]
+        if direct_candidate.exists():
+            return direct_root
+        split_candidate = split_root / sample["target_path"]
+        if split_candidate.exists():
+            return split_root
+        return direct_root
 
     def __len__(self) -> int:
         return len(self.samples)
