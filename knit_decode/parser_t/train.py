@@ -30,7 +30,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-shift", type=int, default=1, help="Global shift tolerance used by the Inverse-Knitting-style CE.")
     parser.add_argument("--image-size", type=int, nargs=2, default=(128, 128), metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--device", type=str, default="cpu", help="Training device, for example `cpu`, `cuda`, or `cuda:1`.")
     return parser
+
+
+def _resolve_device(torch: object, device_name: str) -> object:
+    device_cls = getattr(torch, "device")
+    if device_name == "cpu":
+        return device_cls("cpu")
+    if not getattr(torch, "cuda").is_available():
+        raise RuntimeError(
+            f"Requested device {device_name!r}, but CUDA is not available in the current environment."
+        )
+    return device_cls(device_name)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     torch, optim = _require_torch()
+    device = _resolve_device(torch, args.device)
     dataloader, dataset = build_parser_dataloader(
         args.manifest,
         batch_size=args.batch_size,
@@ -46,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         image_size=(int(args.image_size[0]), int(args.image_size[1])),
     )
     model = TinyTopologyParser(num_classes=dataset.palette.num_classes)
+    model.to(device)
     optimizer = getattr(optim, "Adam")(model.parameters(), lr=args.learning_rate)
 
     history: list[dict[str, object]] = []
@@ -54,8 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         total_loss = 0.0
         batch_count = 0
         for batch in dataloader:
-            images = batch["images"]
-            targets = batch["targets"]
+            images = batch["images"].to(device)
+            targets = batch["targets"].to(device)
             logits = model(images)
             loss = shift_tolerant_cross_entropy(logits, targets, max_shift=args.max_shift)
             optimizer.zero_grad()
@@ -76,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         "max_shift": args.max_shift,
         "image_size": [int(args.image_size[0]), int(args.image_size[1])],
         "learning_rate": args.learning_rate,
+        "device": str(device),
         "num_classes": dataset.palette.num_classes,
         "num_samples": len(dataset),
         "history": history,
