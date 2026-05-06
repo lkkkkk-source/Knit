@@ -1,2 +1,0 @@
-category,source_stem,simulation_path,grid_rows,grid_columns,cell_width,cell_height,average_cell_purity,ambiguous_cell_count,exact_pixel_match_ratio
-Tuck,001,dataset\simulation images\Tuck\001.png,2,2,4,6,0.5,0,0.5
