@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
 from typing import TypedDict
@@ -64,6 +65,7 @@ def load_parser_manifest(path: str | Path) -> list[ParserSample]:
 def build_parser_manifest_from_dataset_complete(dataset_root: str | Path, output_path: str | Path) -> Path:
     dataset_root = Path(dataset_root)
     output_path = Path(output_path)
+    manifest_root = output_path.parent.resolve()
     simulation_root = dataset_root / "simulation images"
     stitch_root = dataset_root / "stitch code patterns"
     manifest_rows: list[dict[str, object]] = []
@@ -85,8 +87,8 @@ def build_parser_manifest_from_dataset_complete(dataset_root: str | Path, output
                 {
                     "sample_id": f"{category}/{image_path.stem}",
                     "category": category,
-                    "image_path": str(image_path.relative_to(output_path.parent)).replace("\\", "/"),
-                    "target_path": str(stitch_candidate.relative_to(output_path.parent)).replace("\\", "/"),
+                    "image_path": os.path.relpath(image_path.resolve(), manifest_root).replace("\\", "/"),
+                    "target_path": os.path.relpath(stitch_candidate.resolve(), manifest_root).replace("\\", "/"),
                 }
             )
 
