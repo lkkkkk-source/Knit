@@ -16,6 +16,7 @@ from .dataset import (
     infer_active_crop,
     load_parser_manifest,
     load_rgb_image,
+    mask_to_image,
     resize_image,
     color_grid_to_class_grid,
     write_grid_json,
