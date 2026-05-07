@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 from .dataset import build_parser_dataloader, compute_class_pixel_counts, mask_to_image
-from .losses import shift_tolerant_cross_entropy
+from .losses import segmentation_cross_entropy
 from .model import build_parser_model
 
 
@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for checkpoints and logs.")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--max-shift", type=int, default=1, help="Global shift tolerance used by the Inverse-Knitting-style CE.")
+    parser.add_argument("--max-shift", type=int, default=0, help="Unused placeholder kept for CLI compatibility.")
     parser.add_argument("--image-size", type=int, nargs=2, default=(128, 128), metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--device", type=str, default="cpu", help="Training device, for example `cpu`, `cuda`, or `cuda:1`.")
@@ -79,7 +79,6 @@ def _evaluate_model(
     model: object,
     dataloader: object,
     device: object,
-    max_shift: int,
     output_dir: Path,
     num_vis: int,
     class_weights: object | None,
@@ -100,7 +99,7 @@ def _evaluate_model(
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
             logits = model(images)
-            loss = shift_tolerant_cross_entropy(logits, targets, max_shift=max_shift, weight=class_weights)
+            loss = segmentation_cross_entropy(logits, targets, weight=class_weights)
             total_loss += float(loss.item())
             batch_count += 1
 
@@ -170,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
             logits = model(images)
-            loss = shift_tolerant_cross_entropy(logits, targets, max_shift=args.max_shift, weight=class_weights)
+            loss = segmentation_cross_entropy(logits, targets, weight=class_weights)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -185,7 +184,6 @@ def main(argv: list[str] | None = None) -> int:
                 model,
                 val_dataloader,
                 device,
-                args.max_shift,
                 args.output_dir,
                 args.num_vis,
                 class_weights,
