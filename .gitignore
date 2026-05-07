@@ -10,3 +10,5 @@ __pycache__/
 /knit_decode.egg-info/
 /parser_t/runs/
 /parser_t/debug/
+/parser_t/cache/
+/parser_t/
