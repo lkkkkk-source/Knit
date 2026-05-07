@@ -50,6 +50,7 @@ class UNetTopologyParser:
                 self.head = nn.Conv2d(width, classes, kernel_size=1)
 
             def forward(self, x: object) -> object:
+                torch, _ = _require_torch()
                 enc1 = self.enc1(x)
                 enc2 = self.enc2(self.pool1(enc1))
                 enc3 = self.enc3(self.pool2(enc2))
@@ -58,17 +59,17 @@ class UNetTopologyParser:
                 up3 = self.up3(bottleneck)
                 if up3.shape[-2:] != enc3.shape[-2:]:
                     up3 = nn.functional.interpolate(up3, size=enc3.shape[-2:], mode="bilinear", align_corners=False)
-                dec3 = self.dec3(nn.functional.cat([up3, enc3], dim=1))
+                dec3 = self.dec3(torch.cat([up3, enc3], dim=1))
 
                 up2 = self.up2(dec3)
                 if up2.shape[-2:] != enc2.shape[-2:]:
                     up2 = nn.functional.interpolate(up2, size=enc2.shape[-2:], mode="bilinear", align_corners=False)
-                dec2 = self.dec2(nn.functional.cat([up2, enc2], dim=1))
+                dec2 = self.dec2(torch.cat([up2, enc2], dim=1))
 
                 up1 = self.up1(dec2)
                 if up1.shape[-2:] != enc1.shape[-2:]:
                     up1 = nn.functional.interpolate(up1, size=enc1.shape[-2:], mode="bilinear", align_corners=False)
-                dec1 = self.dec1(nn.functional.cat([up1, enc1], dim=1))
+                dec1 = self.dec1(torch.cat([up1, enc1], dim=1))
                 return self.head(dec1)
 
         return _Model(num_classes, base_channels)
