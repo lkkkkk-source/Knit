@@ -344,11 +344,15 @@ class SimulationTopologyDataset:
         grid_size: tuple[int, int] = (20, 20),
         vocabulary: ColorVocabulary | None = None,
         top_k_colors: int = 4,
+        crop_input: bool = False,
+        crop_padding: int = 2,
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.root = Path(root) if root is not None else self._infer_root(self.manifest_path)
         self.image_size = image_size
         self.grid_size = grid_size
+        self.crop_input = crop_input
+        self.crop_padding = crop_padding
         raw_samples = load_parser_manifest(self.manifest_path)
         self.samples = [
             SegmentationTarget(
@@ -426,6 +430,9 @@ class SimulationTopologyDataset:
         else:
             source_image = load_rgb_image(sample.image_path)
             source_target = load_rgb_image(sample.target_path)
+            if self.crop_input:
+                crop_box = infer_active_crop(source_image, padding=self.crop_padding)
+                source_image = crop_image(source_image, crop_box)
             image = resize_image(source_image, self.image_size, nearest=False).convert("L")
             target_image = resize_image(source_target, self.image_size, nearest=True)
             image_data = list(image.getdata())
@@ -465,6 +472,8 @@ def build_parser_dataloader(
     num_workers: int = 0,
     pin_memory: bool = False,
     persistent_workers: bool = False,
+    crop_input: bool = False,
+    crop_padding: int = 2,
 ) -> object:
     _, data = _require_torch()
     dataset = SimulationTopologyDataset(
@@ -473,6 +482,8 @@ def build_parser_dataloader(
         grid_size=grid_size,
         vocabulary=vocabulary,
         top_k_colors=top_k_colors,
+        crop_input=crop_input,
+        crop_padding=crop_padding,
     )
     dataloader_cls = getattr(data, "DataLoader")
     worker_persistent = persistent_workers if num_workers > 0 else False

@@ -11,8 +11,12 @@ from PIL import Image
 from .dataset import (
     build_parser_dataloader,
     build_parser_manifest_from_dataset_complete,
+    crop_image,
+    infer_active_crop,
+    load_rgb_image,
     mask_to_image,
     read_vocabulary,
+    resize_image,
 )
 from .losses import segmentation_cross_entropy
 from .model import build_parser_model
@@ -44,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=str, default=None, help="Optional override for parser model name")
     parser.add_argument("--image-size", type=int, nargs=2, default=None, metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--grid-size", type=int, nargs=2, default=None, metavar=("ROWS", "COLS"))
+    parser.add_argument("--crop-input", action="store_true", help="Crop input images to active foreground before resize")
+    parser.add_argument("--crop-padding", type=int, default=2, help="Padding used when cropping active foreground")
     return parser
 
 
@@ -122,6 +128,21 @@ def _save_grayscale_tensor(torch: object, image_tensor: object, output_path: Pat
     output.save(output_path)
 
 
+def _prepare_visual_inputs(
+    image_path: Path,
+    image_size: tuple[int, int],
+    crop_input: bool,
+    crop_padding: int,
+) -> tuple[Image.Image, Image.Image]:
+    source_image = load_rgb_image(image_path)
+    if crop_input:
+        crop_box = infer_active_crop(source_image, padding=crop_padding)
+        source_image = crop_image(source_image, crop_box)
+    resized_rgb = resize_image(source_image, image_size, nearest=False)
+    resized_gray = resized_rgb.convert("L")
+    return resized_rgb, resized_gray
+
+
 def _resolve_existing_path(path_value: str | Path, base_dir: Path) -> Path:
     path = Path(path_value)
     candidates = [path, base_dir / path, Path.cwd() / path]
@@ -173,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
+        crop_input=args.crop_input,
+        crop_padding=args.crop_padding,
     )
     sample_lookup = {sample.sample_id: sample for sample in dataset.samples}
 
@@ -228,7 +251,15 @@ def main(argv: list[str] | None = None) -> int:
                     sample_dir = vis_dir / sample_ids[sample_index].replace("/", "__")
                     sample_dir.mkdir(parents=True, exist_ok=True)
                     sample = sample_lookup[sample_ids[sample_index]]
+                    resized_rgb, resized_gray = _prepare_visual_inputs(
+                        sample.image_path,
+                        cast(tuple[int, int], image_size),
+                        bool(args.crop_input),
+                        int(args.crop_padding),
+                    )
                     _save_grayscale_tensor(torch, image_rows[sample_index], sample_dir / "input.png")
+                    resized_rgb.save(sample_dir / "input_resized_rgb.png")
+                    resized_gray.save(sample_dir / "input_resized_gray.png")
                     mask_to_image(prediction_mask, vocabulary).save(sample_dir / "pred.png")
                     mask_to_image(target_mask, vocabulary).save(sample_dir / "target.png")
                     shutil.copy2(sample.image_path, sample_dir / "input_source.png")
@@ -261,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
         "model": model_name,
         "image_size": list(image_size),
         "grid_size": list(grid_size),
+        "crop_input": bool(args.crop_input),
+        "crop_padding": args.crop_padding,
         "num_samples": len(dataset),
         "batch_size": args.batch_size,
         "num_classes": dataset.num_classes,
