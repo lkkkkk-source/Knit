@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-from .dataset import build_parser_dataloader, class_mask_to_image, Palette
+from .dataset import build_parser_dataloader, build_shared_palette, class_mask_to_image, Palette
 from .losses import shift_tolerant_cross_entropy
 from .model import TinyTopologyParser
 
@@ -119,11 +119,16 @@ def main(argv: list[str] | None = None) -> int:
 
     torch, optim = _require_torch()
     device = _resolve_device(torch, args.device)
+    shared_palette = build_shared_palette(
+        [args.manifest] if args.val_manifest is None else [args.manifest, args.val_manifest],
+        image_size=(int(args.image_size[0]), int(args.image_size[1])),
+    )
     dataloader, dataset = build_parser_dataloader(
         args.manifest,
         batch_size=args.batch_size,
         shuffle=True,
         image_size=(int(args.image_size[0]), int(args.image_size[1])),
+        palette=shared_palette,
     )
     val_dataloader = None
     if args.val_manifest is not None:
@@ -132,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=args.batch_size,
             shuffle=False,
             image_size=(int(args.image_size[0]), int(args.image_size[1])),
-            palette=dataset.palette,
+            palette=shared_palette,
         )
     model = TinyTopologyParser(num_classes=dataset.palette.num_classes)
     model.to(device)

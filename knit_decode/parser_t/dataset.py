@@ -265,3 +265,26 @@ def build_parser_dataloader(
     dataset = SimulationTopologyDataset(manifest_path, image_size=image_size, palette=palette)
     dataloader_cls = getattr(data, "DataLoader")
     return dataloader_cls(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_parser_batch), dataset
+
+
+def build_shared_palette(
+    manifest_paths: Sequence[str | Path],
+    image_size: tuple[int, int] = (128, 128),
+) -> Palette:
+    samples: list[SegmentationTarget] = []
+    for manifest_path in manifest_paths:
+        manifest = Path(manifest_path)
+        root = SimulationTopologyDataset._infer_root(manifest)
+        raw_samples = load_parser_manifest(manifest)
+        samples.extend(
+            [
+                SegmentationTarget(
+                    sample_id=sample["sample_id"],
+                    category=sample["category"],
+                    image_path=root / sample["image_path"],
+                    target_path=root / sample["target_path"],
+                )
+                for sample in raw_samples
+            ]
+        )
+    return build_palette(samples)
