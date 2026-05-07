@@ -10,6 +10,7 @@ from typing import cast
 from PIL import Image
 
 from .dataset import (
+    SimulationTopologyDataset,
     build_parser_dataloader,
     load_parser_manifest,
     load_rgb_image,
@@ -143,12 +144,21 @@ def _load_checkpoint_metadata(checkpoint_path: Path) -> tuple[dict[str, object],
 
 
 def _write_sampled_manifest(source_manifest: Path, output_path: Path, sample_size: int, seed: int) -> Path:
+    source_root = SimulationTopologyDataset._infer_root(source_manifest)
     rows = load_parser_manifest(source_manifest)
     if sample_size > 0 and sample_size < len(rows):
         rng = random.Random(seed)
         rows = rng.sample(rows, sample_size)
+    normalized_rows: list[dict[str, object]] = []
+    for row in rows:
+        normalized = dict(row)
+        if isinstance(row.get("image_path"), str) and row["image_path"]:
+            normalized["image_path"] = str((source_root / row["image_path"]).resolve())
+        if isinstance(row.get("target_path"), str) and row["target_path"]:
+            normalized["target_path"] = str((source_root / row["target_path"]).resolve())
+        normalized_rows.append(normalized)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    text = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
+    text = "\n".join(json.dumps(row, ensure_ascii=False) for row in normalized_rows)
     if text:
         text += "\n"
     output_path.write_text(text, encoding="utf-8")
