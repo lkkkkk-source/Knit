@@ -14,23 +14,7 @@ from PIL import Image, ImageFile
 
 RGB = tuple[int, int, int]
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-SEMANTIC_CLASS_NAMES = (
-    "background",
-    "knit",
-    "tuck",
-    "transfer",
-    "cable",
-    "other",
-)
-SEMANTIC_CLASS_COLORS: dict[int, RGB] = {
-    0: (0, 0, 0),
-    1: (255, 255, 255),
-    2: (0, 255, 0),
-    3: (255, 0, 0),
-    4: (0, 255, 255),
-    5: (255, 0, 255),
-}
+OTHER_COLOR: RGB = (255, 0, 255)
 
 
 class ParserSample(TypedDict):
@@ -63,6 +47,26 @@ class CropBox:
     bottom: int
 
 
+@dataclass(frozen=True)
+class ColorVocabulary:
+    top_colors: tuple[RGB, ...]
+    color_to_class: dict[RGB, int]
+    class_names: tuple[str, ...]
+
+    @property
+    def num_classes(self) -> int:
+        return len(self.class_names)
+
+    @property
+    def other_class_id(self) -> int:
+        return len(self.top_colors)
+
+    def render_color(self, class_id: int) -> RGB:
+        if class_id < len(self.top_colors):
+            return self.top_colors[class_id]
+        return OTHER_COLOR
+
+
 _HEM_PREFIX_RE = re.compile(r"^(\d+[A-Za-z]*)")
 
 
@@ -83,53 +87,6 @@ def _require_torch() -> tuple[object, object]:
     except ImportError as error:
         raise ImportError("PyTorch is required for parser training. Install with `pip install -e .[train]`.") from error
     return torch, data
-
-
-def _hex_to_rgb(value: str) -> RGB:
-    normalized = value.strip().lstrip("#")
-    if len(normalized) != 6:
-        raise ValueError(f"Expected 6-digit hex color, received {value!r}")
-    return (int(normalized[0:2], 16), int(normalized[2:4], 16), int(normalized[4:6], 16))
-
-
-def _coarse_class_name(label: str) -> str:
-    if any(token in label for token in ("空针", "无选针", "不织")):
-        return "background"
-    if "吊目" in label:
-        return "tuck"
-    if "索骨" in label:
-        return "cable"
-    if any(token in label for token in ("翻", "移")):
-        return "transfer"
-    if any(token in label for token in ("编织", "落布")):
-        return "knit"
-    return "other"
-
-
-def _load_semantic_color_map(all_info_path: Path) -> dict[RGB, int]:
-    payload = json.loads(all_info_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"Expected JSON object in {all_info_path}")
-    class_name_to_id = {name: idx for idx, name in enumerate(SEMANTIC_CLASS_NAMES)}
-    color_to_class: dict[RGB, int] = {}
-    for label, raw_value in payload.items():
-        entries = raw_value if isinstance(raw_value, list) else [raw_value]
-        if not isinstance(entries, list):
-            continue
-        coarse_id = class_name_to_id[_coarse_class_name(str(label))]
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            color_value = entry.get("color")
-            if not isinstance(color_value, str):
-                continue
-            rgb = _hex_to_rgb(color_value)
-            existing = color_to_class.get(rgb)
-            if existing is None or existing == coarse_id:
-                color_to_class[rgb] = coarse_id
-            else:
-                color_to_class[rgb] = class_name_to_id["other"]
-    return color_to_class
 
 
 def load_parser_manifest(path: str | Path) -> list[ParserSample]:
@@ -242,17 +199,13 @@ def resize_image(image: Image.Image, size: tuple[int, int], nearest: bool = Fals
     return image.resize(size, resample=resample)
 
 
-def downsample_semantic_grid(
-    image: Image.Image,
-    grid_size: tuple[int, int],
-    color_to_class: dict[RGB, int],
-) -> list[list[int]]:
+def downsample_color_grid(image: Image.Image, grid_size: tuple[int, int]) -> list[list[RGB]]:
     rows = image.height
     cols = image.width
     grid_rows, grid_cols = grid_size
-    output: list[list[int]] = []
+    output: list[list[RGB]] = []
     for grid_row in range(grid_rows):
-        row_values: list[int] = []
+        row_values: list[RGB] = []
         y0 = (grid_row * rows) // grid_rows
         y1 = ((grid_row + 1) * rows) // grid_rows
         for grid_col in range(grid_cols):
@@ -261,20 +214,41 @@ def downsample_semantic_grid(
             counts = Counter()
             for y_pos in range(y0, max(y0 + 1, y1)):
                 for x_pos in range(x0, max(x0 + 1, x1)):
-                    color = cast(RGB, image.getpixel((x_pos, y_pos)))
-                    counts[color_to_class.get(color, len(SEMANTIC_CLASS_NAMES) - 1)] += 1
+                    counts[cast(RGB, image.getpixel((x_pos, y_pos)))] += 1
             row_values.append(counts.most_common(1)[0][0])
         output.append(row_values)
     return output
 
 
-def mask_to_image(mask: list[list[int]]) -> Image.Image:
+def build_topk_color_vocabulary(samples: Sequence[SegmentationTarget], image_size: tuple[int, int], grid_size: tuple[int, int], top_k: int) -> ColorVocabulary:
+    counter: Counter[RGB] = Counter()
+    for sample in samples:
+        target_image = load_rgb_image(sample.target_path)
+        crop_box = infer_active_crop(target_image)
+        resized = resize_image(crop_image(target_image, crop_box), image_size, nearest=True)
+        color_grid = downsample_color_grid(resized, grid_size)
+        for row in color_grid:
+            counter.update(row)
+    top_colors = tuple(color for color, _ in counter.most_common(top_k))
+    color_to_class = {color: idx for idx, color in enumerate(top_colors)}
+    class_names = tuple([f"color_{index}" for index in range(len(top_colors))] + ["other"])
+    return ColorVocabulary(top_colors=top_colors, color_to_class=color_to_class, class_names=class_names)
+
+
+def color_grid_to_class_grid(color_grid: list[list[RGB]], vocabulary: ColorVocabulary) -> list[list[int]]:
+    rows: list[list[int]] = []
+    for row in color_grid:
+        rows.append([vocabulary.color_to_class.get(color, vocabulary.other_class_id) for color in row])
+    return rows
+
+
+def mask_to_image(mask: list[list[int]], vocabulary: ColorVocabulary) -> Image.Image:
     height = len(mask)
     width = len(mask[0]) if height else 0
     image = Image.new("RGB", (width, height))
     for y_pos, row in enumerate(mask):
         for x_pos, class_id in enumerate(row):
-            image.putpixel((x_pos, y_pos), SEMANTIC_CLASS_COLORS[class_id])
+            image.putpixel((x_pos, y_pos), vocabulary.render_color(class_id))
     return image
 
 
@@ -285,6 +259,8 @@ class SimulationTopologyDataset:
         root: str | Path | None = None,
         image_size: tuple[int, int] = (160, 160),
         grid_size: tuple[int, int] = (20, 20),
+        vocabulary: ColorVocabulary | None = None,
+        top_k_colors: int = 4,
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.root = Path(root) if root is not None else self._infer_root(self.manifest_path)
@@ -300,9 +276,14 @@ class SimulationTopologyDataset:
             )
             for sample in raw_samples
         ]
-        self.num_classes = len(SEMANTIC_CLASS_NAMES)
-        self.class_names = list(SEMANTIC_CLASS_NAMES)
-        self.color_to_class = self._infer_color_map()
+        self.vocabulary = vocabulary if vocabulary is not None else build_topk_color_vocabulary(
+            self.samples,
+            image_size=self.image_size,
+            grid_size=self.grid_size,
+            top_k=top_k_colors,
+        )
+        self.num_classes = self.vocabulary.num_classes
+        self.class_names = list(self.vocabulary.class_names)
 
     @staticmethod
     def _infer_root(manifest_path: Path) -> Path:
@@ -320,14 +301,6 @@ class SimulationTopologyDataset:
             return split_root
         return direct_root
 
-    def _infer_color_map(self) -> dict[RGB, int]:
-        for sample in self.samples:
-            for parent in sample.target_path.parents:
-                legend_path = parent / "all_info.json"
-                if legend_path.exists():
-                    return _load_semantic_color_map(legend_path)
-        raise FileNotFoundError("Could not locate all_info.json for semantic color mapping.")
-
     def __len__(self) -> int:
         return len(self.samples)
 
@@ -342,8 +315,9 @@ class SimulationTopologyDataset:
         image_data = list(image.getdata())
         height, width = image.height, image.width
         image_tensor = getattr(torch, "tensor")([pixel / 255.0 for pixel in image_data], dtype=getattr(torch, "float32")).reshape(1, height, width)
-        target_grid = downsample_semantic_grid(target_image, self.grid_size, self.color_to_class)
-        target_tensor = getattr(torch, "tensor")(target_grid, dtype=getattr(torch, "long"))
+        color_grid = downsample_color_grid(target_image, self.grid_size)
+        class_grid = color_grid_to_class_grid(color_grid, self.vocabulary)
+        target_tensor = getattr(torch, "tensor")(class_grid, dtype=getattr(torch, "long"))
         return {
             "sample_id": sample.sample_id,
             "category": sample.category,
@@ -370,9 +344,17 @@ def build_parser_dataloader(
     shuffle: bool,
     image_size: tuple[int, int] = (160, 160),
     grid_size: tuple[int, int] = (20, 20),
+    vocabulary: ColorVocabulary | None = None,
+    top_k_colors: int = 4,
 ) -> object:
     _, data = _require_torch()
-    dataset = SimulationTopologyDataset(manifest_path, image_size=image_size, grid_size=grid_size)
+    dataset = SimulationTopologyDataset(
+        manifest_path,
+        image_size=image_size,
+        grid_size=grid_size,
+        vocabulary=vocabulary,
+        top_k_colors=top_k_colors,
+    )
     dataloader_cls = getattr(data, "DataLoader")
     return dataloader_cls(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_parser_batch), dataset
 
@@ -385,8 +367,9 @@ def compute_class_pixel_counts(dataset: SimulationTopologyDataset) -> list[int]:
             dataset.image_size,
             nearest=True,
         )
-        grid = downsample_semantic_grid(target_image, dataset.grid_size, dataset.color_to_class)
-        for row in grid:
+        color_grid = downsample_color_grid(target_image, dataset.grid_size)
+        class_grid = color_grid_to_class_grid(color_grid, dataset.vocabulary)
+        for row in class_grid:
             for class_id in row:
                 counts[class_id] += 1
     return counts

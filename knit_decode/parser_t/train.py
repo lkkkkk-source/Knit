@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-from .dataset import build_parser_dataloader, compute_class_pixel_counts, mask_to_image
+from .dataset import build_parser_dataloader, build_topk_color_vocabulary, compute_class_pixel_counts, mask_to_image
 from .losses import segmentation_cross_entropy
 from .model import build_parser_model
 
@@ -35,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-manifest", type=Path, default=None, help="Optional validation manifest.")
     parser.add_argument("--num-vis", type=int, default=4, help="Number of validation predictions to export.")
     parser.add_argument("--model", type=str, default="kaspar", help="Parser backbone name. Default: kaspar.")
+    parser.add_argument("--top-k-colors", type=int, default=4, help="Number of most frequent grid colors to keep as explicit classes.")
     return parser
 
 
@@ -83,6 +84,7 @@ def _evaluate_model(
     output_dir: Path,
     num_vis: int,
     num_classes: int,
+    vocabulary: object,
 ) -> dict[str, object]:
     model.eval()
     total_loss = 0.0
@@ -113,8 +115,8 @@ def _evaluate_model(
                         confusion[actual][predicted] += 1
                 if vis_written < num_vis:
                     sample_id = str(batch["sample_ids"][sample_index]).replace("/", "__")
-                    mask_to_image(prediction_mask).save(vis_dir / f"{sample_id}_pred.png")
-                    mask_to_image(target_mask).save(vis_dir / f"{sample_id}_target.png")
+                    mask_to_image(prediction_mask, vocabulary).save(vis_dir / f"{sample_id}_pred.png")
+                    mask_to_image(target_mask, vocabulary).save(vis_dir / f"{sample_id}_target.png")
                     vis_written += 1
 
     metrics = _compute_segmentation_metrics(confusion)
@@ -129,12 +131,24 @@ def main(argv: list[str] | None = None) -> int:
 
     torch, optim = _require_torch()
     device = _resolve_device(torch, args.device)
+    _, train_dataset = build_parser_dataloader(
+        args.manifest,
+        batch_size=args.batch_size,
+        shuffle=True,
+        image_size=(int(args.image_size[0]), int(args.image_size[1])),
+        grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
+        vocabulary=None,
+        top_k_colors=args.top_k_colors,
+    )
+    vocabulary = train_dataset.vocabulary
     dataloader, dataset = build_parser_dataloader(
         args.manifest,
         batch_size=args.batch_size,
         shuffle=True,
         image_size=(int(args.image_size[0]), int(args.image_size[1])),
         grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
+        vocabulary=vocabulary,
+        top_k_colors=args.top_k_colors,
     )
     val_dataloader = None
     if args.val_manifest is not None:
@@ -144,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
             shuffle=False,
             image_size=(int(args.image_size[0]), int(args.image_size[1])),
             grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
+            vocabulary=vocabulary,
+            top_k_colors=args.top_k_colors,
         )
 
     model = build_parser_model(args.model, num_classes=dataset.num_classes)
@@ -179,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.num_vis,
                 dataset.num_classes,
+                vocabulary,
             )
             epoch_metrics["val_loss"] = val_metrics["loss"]
             epoch_metrics["val_pixel_accuracy"] = val_metrics["pixel_accuracy"]
@@ -208,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
         "learning_rate": args.learning_rate,
         "device": str(device),
         "model": args.model,
+        "top_k_colors": args.top_k_colors,
         "num_classes": dataset.num_classes,
         "class_names": dataset.class_names,
         "num_samples": len(dataset),
