@@ -22,18 +22,19 @@ def _require_torch() -> tuple[object, object]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train a first-pass simulation-image to structure parser.")
-    parser.add_argument("--manifest", type=Path, required=True, help="JSONL manifest mapping simulation images to structure-mask targets.")
+    parser = argparse.ArgumentParser(description="Train an Inverse-Knitting-style simulation-image to structure-grid parser.")
+    parser.add_argument("--manifest", type=Path, required=True, help="JSONL manifest mapping simulation images to structure-grid targets.")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for checkpoints and logs.")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--max-shift", type=int, default=0, help="Unused placeholder kept for CLI compatibility.")
-    parser.add_argument("--image-size", type=int, nargs=2, default=(128, 128), metavar=("WIDTH", "HEIGHT"))
+    parser.add_argument("--max-shift", type=int, default=1, help="Global shift tolerance used by the Inverse-Knitting-style CE.")
+    parser.add_argument("--image-size", type=int, nargs=2, default=(160, 160), metavar=("WIDTH", "HEIGHT"))
+    parser.add_argument("--grid-size", type=int, nargs=2, default=(20, 20), metavar=("ROWS", "COLS"))
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--device", type=str, default="cpu", help="Training device, for example `cpu`, `cuda`, or `cuda:1`.")
     parser.add_argument("--val-manifest", type=Path, default=None, help="Optional validation manifest.")
     parser.add_argument("--num-vis", type=int, default=4, help="Number of validation predictions to export.")
-    parser.add_argument("--model", type=str, default="unet", help="Parser backbone name. Default: unet.")
+    parser.add_argument("--model", type=str, default="kaspar", help="Parser backbone name. Default: kaspar.")
     return parser
 
 
@@ -81,7 +82,6 @@ def _evaluate_model(
     device: object,
     output_dir: Path,
     num_vis: int,
-    class_weights: object | None,
     num_classes: int,
 ) -> dict[str, object]:
     model.eval()
@@ -99,7 +99,7 @@ def _evaluate_model(
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
             logits = model(images)
-            loss = segmentation_cross_entropy(logits, targets, weight=class_weights)
+            loss = segmentation_cross_entropy(logits, targets)
             total_loss += float(loss.item())
             batch_count += 1
 
@@ -134,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         shuffle=True,
         image_size=(int(args.image_size[0]), int(args.image_size[1])),
+        grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
     )
     val_dataloader = None
     if args.val_manifest is not None:
@@ -142,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=args.batch_size,
             shuffle=False,
             image_size=(int(args.image_size[0]), int(args.image_size[1])),
+            grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
         )
 
     model = build_parser_model(args.model, num_classes=dataset.num_classes)
@@ -149,16 +151,6 @@ def main(argv: list[str] | None = None) -> int:
     optimizer = getattr(optim, "Adam")(model.parameters(), lr=args.learning_rate)
 
     class_pixel_counts = compute_class_pixel_counts(dataset)
-    total_pixels = max(1, sum(class_pixel_counts))
-    weights: list[float] = []
-    for count in class_pixel_counts:
-        if count <= 0:
-            weights.append(0.0)
-        else:
-            weights.append(total_pixels / float(count))
-    max_weight = max((value for value in weights if value > 0), default=1.0)
-    normalized_weights = [value / max_weight if value > 0 else 0.0 for value in weights]
-    class_weights = getattr(torch, "tensor")(normalized_weights, dtype=getattr(torch, "float32")).to(device)
 
     history: list[dict[str, object]] = []
     for epoch in range(args.epochs):
@@ -169,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
             logits = model(images)
-            loss = segmentation_cross_entropy(logits, targets, weight=class_weights)
+            loss = segmentation_cross_entropy(logits, targets)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -186,7 +178,6 @@ def main(argv: list[str] | None = None) -> int:
                 device,
                 args.output_dir,
                 args.num_vis,
-                class_weights,
                 dataset.num_classes,
             )
             epoch_metrics["val_loss"] = val_metrics["loss"]
@@ -213,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         "batch_size": args.batch_size,
         "max_shift": args.max_shift,
         "image_size": [int(args.image_size[0]), int(args.image_size[1])],
+        "grid_size": [int(args.grid_size[0]), int(args.grid_size[1])],
         "learning_rate": args.learning_rate,
         "device": str(device),
         "model": args.model,
@@ -220,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         "num_samples": len(dataset),
         "num_val_samples": 0 if val_dataloader is None else len(cast(object, val_dataloader).dataset),
         "class_pixel_counts": class_pixel_counts,
-        "class_weights": normalized_weights,
+        "class_weights": None,
         "history": history,
     }
     (args.output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")

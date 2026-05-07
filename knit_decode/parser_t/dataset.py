@@ -191,6 +191,27 @@ def build_structure_mask(image: Image.Image) -> list[list[int]]:
     return rows
 
 
+def downsample_mask_to_grid(mask: list[list[int]], grid_size: tuple[int, int]) -> list[list[int]]:
+    rows = len(mask)
+    cols = len(mask[0]) if rows else 0
+    grid_rows, grid_cols = grid_size
+    output: list[list[int]] = []
+    for grid_row in range(grid_rows):
+        row_values: list[int] = []
+        y0 = (grid_row * rows) // grid_rows
+        y1 = ((grid_row + 1) * rows) // grid_rows
+        for grid_col in range(grid_cols):
+            x0 = (grid_col * cols) // grid_cols
+            x1 = ((grid_col + 1) * cols) // grid_cols
+            counts = Counter()
+            for y_pos in range(y0, max(y0 + 1, y1)):
+                for x_pos in range(x0, max(x0 + 1, x1)):
+                    counts[mask[y_pos][x_pos]] += 1
+            row_values.append(counts.most_common(1)[0][0])
+        output.append(row_values)
+    return output
+
+
 def mask_to_image(mask: list[list[int]]) -> Image.Image:
     height = len(mask)
     width = len(mask[0]) if height else 0
@@ -207,11 +228,13 @@ class SimulationTopologyDataset:
         self,
         manifest_path: str | Path,
         root: str | Path | None = None,
-        image_size: tuple[int, int] = (128, 128),
+        image_size: tuple[int, int] = (160, 160),
+        grid_size: tuple[int, int] = (20, 20),
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.root = Path(root) if root is not None else self._infer_root(self.manifest_path)
         self.image_size = image_size
+        self.grid_size = grid_size
         raw_samples = load_parser_manifest(self.manifest_path)
         self.samples = [
             SegmentationTarget(
@@ -249,14 +272,14 @@ class SimulationTopologyDataset:
         source_image = load_rgb_image(sample.image_path)
         source_target = load_rgb_image(sample.target_path)
         crop_box = infer_active_crop(source_target)
-        image = resize_image(crop_image(source_image, crop_box), self.image_size, nearest=False)
+        image = resize_image(crop_image(source_image, crop_box), self.image_size, nearest=False).convert("L")
         target_image = resize_image(crop_image(source_target, crop_box), self.image_size, nearest=True)
         image_data = list(image.getdata())
-        channels = [[pixel[channel] / 255.0 for pixel in image_data] for channel in range(3)]
         height, width = image.height, image.width
-        image_tensor = getattr(torch, "tensor")(channels, dtype=getattr(torch, "float32")).reshape(3, height, width)
+        image_tensor = getattr(torch, "tensor")([pixel / 255.0 for pixel in image_data], dtype=getattr(torch, "float32")).reshape(1, height, width)
         target_mask = build_structure_mask(target_image)
-        target_tensor = getattr(torch, "tensor")(target_mask, dtype=getattr(torch, "long"))
+        grid_mask = downsample_mask_to_grid(target_mask, self.grid_size)
+        target_tensor = getattr(torch, "tensor")(grid_mask, dtype=getattr(torch, "long"))
         return {
             "sample_id": sample.sample_id,
             "category": sample.category,
@@ -281,10 +304,11 @@ def build_parser_dataloader(
     manifest_path: str | Path,
     batch_size: int,
     shuffle: bool,
-    image_size: tuple[int, int] = (128, 128),
+    image_size: tuple[int, int] = (160, 160),
+    grid_size: tuple[int, int] = (20, 20),
 ) -> object:
     _, data = _require_torch()
-    dataset = SimulationTopologyDataset(manifest_path, image_size=image_size)
+    dataset = SimulationTopologyDataset(manifest_path, image_size=image_size, grid_size=grid_size)
     dataloader_cls = getattr(data, "DataLoader")
     return dataloader_cls(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_parser_batch), dataset
 
@@ -294,7 +318,8 @@ def compute_class_pixel_counts(dataset: SimulationTopologyDataset) -> list[int]:
     for sample in dataset.samples:
         target_image = resize_image(crop_image(load_rgb_image(sample.target_path), infer_active_crop(load_rgb_image(sample.target_path))), dataset.image_size, nearest=True)
         target_mask = build_structure_mask(target_image)
-        for row in target_mask:
+        grid_mask = downsample_mask_to_grid(target_mask, dataset.grid_size)
+        for row in grid_mask:
             for class_id in row:
                 counts[class_id] += 1
     return counts
