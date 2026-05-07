@@ -98,15 +98,20 @@ def load_parser_manifest(path: str | Path) -> list[ParserSample]:
         payload = json.loads(line)
         if not isinstance(payload, dict):
             raise ValueError(f"Expected JSON object line in {manifest_path}")
-        required = ("sample_id", "image_path", "target_path", "category")
-        if any(not isinstance(payload.get(key), str) for key in required):
+        sample_id = payload.get("sample_id")
+        input_path = payload.get("image_path", payload.get("input_path"))
+        target_path = payload.get("target_path")
+        category = payload.get("category")
+        if category is None and isinstance(sample_id, str):
+            category = sample_id.split("/", 1)[0] if "/" in sample_id else sample_id.split("_", 1)[0]
+        if not isinstance(sample_id, str) or not isinstance(input_path, str) or not isinstance(target_path, str) or not isinstance(category, str):
             raise ValueError(f"Invalid parser sample entry in {manifest_path}: {payload!r}")
         rows.append(
             {
-                "sample_id": str(payload["sample_id"]),
-                "image_path": str(payload["image_path"]),
-                "target_path": str(payload["target_path"]),
-                "category": str(payload["category"]),
+                "sample_id": sample_id,
+                "image_path": input_path,
+                "target_path": target_path,
+                "category": category,
             }
         )
     return rows
