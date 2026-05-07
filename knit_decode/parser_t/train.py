@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-vis", type=int, default=4, help="Number of validation predictions to export.")
     parser.add_argument("--model", type=str, default="kaspar", help="Parser backbone name. Default: kaspar.")
     parser.add_argument("--top-k-colors", type=int, default=4, help="Number of most frequent grid colors to keep as explicit classes.")
+    parser.add_argument("--use-class-weights", action="store_true", help="Use mild class weights based on inverse square-root frequency.")
     return parser
 
 
@@ -89,6 +90,14 @@ def _compute_segmentation_metrics(confusion: list[list[int]]) -> dict[str, objec
     }
 
 
+def _histogram(values: list[list[int]], num_classes: int) -> list[int]:
+    counts = [0 for _ in range(num_classes)]
+    for row in values:
+        for class_id in row:
+            counts[class_id] += 1
+    return counts
+
+
 def _evaluate_model(
     torch: object,
     model: object,
@@ -98,11 +107,14 @@ def _evaluate_model(
     num_vis: int,
     num_classes: int,
     vocabulary: object,
+    class_weights: object | None,
 ) -> dict[str, object]:
     model.eval()
     total_loss = 0.0
     batch_count = 0
     confusion = [[0 for _ in range(num_classes)] for _ in range(num_classes)]
+    prediction_hist = [0 for _ in range(num_classes)]
+    target_hist = [0 for _ in range(num_classes)]
     vis_dir = output_dir / "val_predictions"
     vis_dir.mkdir(parents=True, exist_ok=True)
     vis_written = 0
@@ -124,6 +136,11 @@ def _evaluate_model(
             target_rows = targets.detach().cpu().tolist()
             for sample_index, prediction_mask in enumerate(predictions):
                 target_mask = target_rows[sample_index]
+                pred_counts = _histogram(prediction_mask, num_classes)
+                tgt_counts = _histogram(target_mask, num_classes)
+                for class_id in range(num_classes):
+                    prediction_hist[class_id] += pred_counts[class_id]
+                    target_hist[class_id] += tgt_counts[class_id]
                 for row_index, row in enumerate(target_mask):
                     for col_index, actual in enumerate(row):
                         predicted = prediction_mask[row_index][col_index]
@@ -137,6 +154,8 @@ def _evaluate_model(
 
     metrics = _compute_segmentation_metrics(confusion)
     metrics["loss"] = total_loss / max(1, batch_count)
+    metrics["prediction_histogram"] = prediction_hist
+    metrics["target_histogram"] = target_hist
     return metrics
 
 
@@ -183,6 +202,20 @@ def main(argv: list[str] | None = None) -> int:
     optimizer = getattr(optim, "Adam")(model.parameters(), lr=args.learning_rate)
 
     class_pixel_counts = compute_class_pixel_counts(dataset)
+    class_weights = None
+    if args.use_class_weights:
+        total_pixels = max(1, sum(class_pixel_counts))
+        weights: list[float] = []
+        for count in class_pixel_counts:
+            if count <= 0:
+                weights.append(0.0)
+            else:
+                weights.append((total_pixels / float(count)) ** 0.5)
+        max_weight = max((value for value in weights if value > 0), default=1.0)
+        normalized_weights = [value / max_weight if value > 0 else 0.0 for value in weights]
+        class_weights = getattr(torch, "tensor")(normalized_weights, dtype=getattr(torch, "float32")).to(device)
+    else:
+        normalized_weights = None
 
     history: list[dict[str, object]] = []
     for epoch in range(args.epochs):
@@ -195,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
             logits = model(images)
-            loss = segmentation_cross_entropy(logits, targets)
+            loss = segmentation_cross_entropy(logits, targets, weight=class_weights)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -216,12 +249,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.num_vis,
                 dataset.num_classes,
                 vocabulary,
+                class_weights,
             )
             epoch_metrics["val_loss"] = val_metrics["loss"]
             epoch_metrics["val_pixel_accuracy"] = val_metrics["pixel_accuracy"]
             epoch_metrics["val_mean_iou"] = val_metrics["mean_iou"]
             epoch_metrics["val_foreground_mean_iou"] = val_metrics["foreground_mean_iou"]
             epoch_metrics["val_per_class_iou"] = val_metrics["per_class_iou"]
+            epoch_metrics["val_prediction_histogram"] = val_metrics["prediction_histogram"]
+            epoch_metrics["val_target_histogram"] = val_metrics["target_histogram"]
             print(
                 f"epoch={epoch + 1} train_loss={mean_loss:.6f} "
                 f"val_loss={cast(float, val_metrics['loss']):.6f} "
@@ -229,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"val_miou={cast(float, val_metrics['mean_iou']):.4f} "
                 f"val_fg_miou={cast(float, val_metrics['foreground_mean_iou']):.4f}"
             )
+            print(f"val_pred_hist={val_metrics['prediction_histogram']}")
+            print(f"val_tgt_hist={val_metrics['target_histogram']}")
         else:
             print(f"epoch={epoch + 1} train_loss={mean_loss:.6f}")
         history.append(epoch_metrics)
@@ -251,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
         "num_samples": len(dataset),
         "num_val_samples": 0 if val_dataloader is None else len(cast(object, val_dataloader).dataset),
         "class_pixel_counts": class_pixel_counts,
-        "class_weights": None,
+        "class_weights": normalized_weights,
         "history": history,
     }
     (args.output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
