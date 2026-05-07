@@ -9,3 +9,4 @@ __pycache__/
 *.py[cod]
 /knit_decode.egg-info/
 /parser_t/runs/
+/parser_t/debug/
