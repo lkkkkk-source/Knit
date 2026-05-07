@@ -168,6 +168,16 @@ def resize_image(image: Image.Image, size: tuple[int, int], nearest: bool = Fals
     return image.resize(size, resample=resample)
 
 
+def class_mask_to_image(mask: list[list[int]], palette: Palette) -> Image.Image:
+    height = len(mask)
+    width = len(mask[0]) if height else 0
+    image = Image.new("RGB", (width, height))
+    for y_pos, row in enumerate(mask):
+        for x_pos, class_id in enumerate(row):
+            image.putpixel((x_pos, y_pos), palette.colors[class_id])
+    return image
+
+
 class SimulationTopologyDataset:
     def __init__(
         self,
