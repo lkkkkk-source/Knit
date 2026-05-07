@@ -49,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-size", type=int, nargs=2, default=None, metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--grid-size", type=int, nargs=2, default=None, metavar=("ROWS", "COLS"))
     parser.add_argument("--crop-input", action="store_true", help="Crop input images to active foreground before resize")
+    parser.add_argument("--crop-target", action="store_true", help="Crop input images using GT target foreground before resize")
     parser.add_argument("--crop-padding", type=int, default=2, help="Padding used when cropping active foreground")
     return parser
 
@@ -130,12 +131,18 @@ def _save_grayscale_tensor(torch: object, image_tensor: object, output_path: Pat
 
 def _prepare_visual_inputs(
     image_path: Path,
+    target_path: Path,
     image_size: tuple[int, int],
     crop_input: bool,
+    crop_target: bool,
     crop_padding: int,
 ) -> tuple[Image.Image, Image.Image]:
     source_image = load_rgb_image(image_path)
-    if crop_input:
+    if crop_target:
+        source_target = load_rgb_image(target_path)
+        crop_box = infer_active_crop(source_target, padding=crop_padding)
+        source_image = crop_image(source_image, crop_box)
+    elif crop_input:
         crop_box = infer_active_crop(source_image, padding=crop_padding)
         source_image = crop_image(source_image, crop_box)
     resized_rgb = resize_image(source_image, image_size, nearest=False)
@@ -195,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
         crop_input=args.crop_input,
+        crop_target=args.crop_target,
         crop_padding=args.crop_padding,
     )
     sample_lookup = {sample.sample_id: sample for sample in dataset.samples}
@@ -253,8 +261,10 @@ def main(argv: list[str] | None = None) -> int:
                     sample = sample_lookup[sample_ids[sample_index]]
                     resized_rgb, resized_gray = _prepare_visual_inputs(
                         sample.image_path,
+                        sample.target_path,
                         cast(tuple[int, int], image_size),
                         bool(args.crop_input),
+                        bool(args.crop_target),
                         int(args.crop_padding),
                     )
                     _save_grayscale_tensor(torch, image_rows[sample_index], sample_dir / "input.png")
@@ -293,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         "image_size": list(image_size),
         "grid_size": list(grid_size),
         "crop_input": bool(args.crop_input),
+        "crop_target": bool(args.crop_target),
         "crop_padding": args.crop_padding,
         "num_samples": len(dataset),
         "batch_size": args.batch_size,
