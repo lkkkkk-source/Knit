@@ -11,7 +11,13 @@ def _require_torch() -> object:
         raise ImportError("PyTorch is required for parser training. Install with `pip install -e .[train]`.") from error
 
 
-def shift_tolerant_cross_entropy(logits: object, targets: object, max_shift: int = 1, ignore_index: int = -100) -> object:
+def shift_tolerant_cross_entropy(
+    logits: object,
+    targets: object,
+    max_shift: int = 1,
+    ignore_index: int = -100,
+    weight: object | None = None,
+) -> object:
     torch = _require_torch()
     functional = cast(object, importlib.import_module("torch.nn.functional"))
     ce = getattr(functional, "cross_entropy")
@@ -20,7 +26,6 @@ def shift_tolerant_cross_entropy(logits: object, targets: object, max_shift: int
     for y_shift in shifts:
         for x_shift in shifts:
             shifted_targets = getattr(torch, "roll")(targets, shifts=(y_shift, x_shift), dims=(-2, -1))
-            losses.append(ce(logits, shifted_targets, ignore_index=ignore_index))
+            losses.append(ce(logits, shifted_targets, ignore_index=ignore_index, weight=weight))
     stacked = getattr(torch, "stack")(losses)
     return getattr(torch, "min")(stacked)
-

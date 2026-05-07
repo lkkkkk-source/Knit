@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import cast
 
-from .dataset import build_parser_dataloader, build_shared_palette, class_mask_to_image, Palette
+from .dataset import build_parser_dataloader, build_shared_palette, class_mask_to_image, compute_class_pixel_counts, Palette
 from .losses import shift_tolerant_cross_entropy
 from .model import TinyTopologyParser
 
@@ -47,21 +48,37 @@ def _resolve_device(torch: object, device_name: str) -> object:
     return device_cls(device_name)
 
 
-def _compute_segmentation_metrics(confusion: list[list[int]]) -> dict[str, float]:
+def _compute_segmentation_metrics(confusion: list[list[int]]) -> dict[str, object]:
     num_classes = len(confusion)
     correct = sum(confusion[index][index] for index in range(num_classes))
     total = sum(sum(row) for row in confusion)
     pixel_accuracy = correct / total if total else 0.0
     ious: list[float] = []
+    per_class_iou: list[float | None] = []
     for class_id in range(num_classes):
         intersection = confusion[class_id][class_id]
         predicted = sum(confusion[row_id][class_id] for row_id in range(num_classes))
         actual = sum(confusion[class_id])
         union = actual + predicted - intersection
         if union > 0:
-            ious.append(intersection / union)
+            value = intersection / union
+            ious.append(value)
+            per_class_iou.append(value)
+        else:
+            per_class_iou.append(None)
     mean_iou = sum(ious) / len(ious) if ious else 0.0
-    return {"pixel_accuracy": pixel_accuracy, "mean_iou": mean_iou}
+
+    row_totals = [sum(row) for row in confusion]
+    dominant_class = max(range(num_classes), key=lambda index: row_totals[index]) if row_totals else 0
+    fg_ious = [value for index, value in enumerate(per_class_iou) if value is not None and index != dominant_class]
+    foreground_mean_iou = sum(fg_ious) / len(fg_ious) if fg_ious else 0.0
+    return {
+        "pixel_accuracy": pixel_accuracy,
+        "mean_iou": mean_iou,
+        "foreground_mean_iou": foreground_mean_iou,
+        "dominant_class": dominant_class,
+        "per_class_iou": per_class_iou,
+    }
 
 
 def _evaluate_model(
@@ -73,6 +90,7 @@ def _evaluate_model(
     palette: Palette,
     output_dir: Path,
     num_vis: int,
+    class_weights: object | None,
 ) -> dict[str, object]:
     model.eval()
     total_loss = 0.0
@@ -89,7 +107,7 @@ def _evaluate_model(
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
             logits = model(images)
-            loss = shift_tolerant_cross_entropy(logits, targets, max_shift=max_shift)
+            loss = shift_tolerant_cross_entropy(logits, targets, max_shift=max_shift, weight=class_weights)
             total_loss += float(loss.item())
             batch_count += 1
 
@@ -142,6 +160,17 @@ def main(argv: list[str] | None = None) -> int:
     model = TinyTopologyParser(num_classes=dataset.palette.num_classes)
     model.to(device)
     optimizer = getattr(optim, "Adam")(model.parameters(), lr=args.learning_rate)
+    class_pixel_counts = compute_class_pixel_counts(dataset)
+    total_pixels = max(1, sum(class_pixel_counts))
+    weights: list[float] = []
+    for count in class_pixel_counts:
+        if count <= 0:
+            weights.append(0.0)
+        else:
+            weights.append(total_pixels / float(count))
+    max_weight = max((value for value in weights if value > 0), default=1.0)
+    normalized_weights = [value / max_weight if value > 0 else 0.0 for value in weights]
+    class_weights = getattr(torch, "tensor")(normalized_weights, dtype=getattr(torch, "float32")).to(device)
 
     history: list[dict[str, object]] = []
     for epoch in range(args.epochs):
@@ -152,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
             logits = model(images)
-            loss = shift_tolerant_cross_entropy(logits, targets, max_shift=args.max_shift)
+            loss = shift_tolerant_cross_entropy(logits, targets, max_shift=args.max_shift, weight=class_weights)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -171,15 +200,20 @@ def main(argv: list[str] | None = None) -> int:
                 dataset.palette,
                 args.output_dir,
                 args.num_vis,
+                class_weights,
             )
             epoch_metrics["val_loss"] = val_metrics["loss"]
             epoch_metrics["val_pixel_accuracy"] = val_metrics["pixel_accuracy"]
             epoch_metrics["val_mean_iou"] = val_metrics["mean_iou"]
+            epoch_metrics["val_foreground_mean_iou"] = val_metrics["foreground_mean_iou"]
+            epoch_metrics["val_dominant_class"] = val_metrics["dominant_class"]
+            epoch_metrics["val_per_class_iou"] = val_metrics["per_class_iou"]
             print(
                 f"epoch={epoch + 1} train_loss={mean_loss:.6f} "
                 f"val_loss={cast(float, val_metrics['loss']):.6f} "
                 f"val_acc={cast(float, val_metrics['pixel_accuracy']):.4f} "
-                f"val_miou={cast(float, val_metrics['mean_iou']):.4f}"
+                f"val_miou={cast(float, val_metrics['mean_iou']):.4f} "
+                f"val_fg_miou={cast(float, val_metrics['foreground_mean_iou']):.4f}"
             )
         else:
             print(f"epoch={epoch + 1} train_loss={mean_loss:.6f}")
@@ -198,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
         "num_classes": dataset.palette.num_classes,
         "num_samples": len(dataset),
         "num_val_samples": 0 if val_dataloader is None else len(cast(object, val_dataloader).dataset),
+        "class_pixel_counts": class_pixel_counts,
+        "class_weights": normalized_weights,
         "history": history,
     }
     (args.output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")

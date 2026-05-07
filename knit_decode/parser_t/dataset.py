@@ -49,6 +49,14 @@ class Palette:
         return len(self.colors)
 
 
+@dataclass(frozen=True)
+class CropBox:
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+
 _HEM_PREFIX_RE = re.compile(r"^(\d+[A-Za-z]*)")
 
 
@@ -163,6 +171,40 @@ def image_to_class_mask(image: Image.Image, palette: Palette) -> list[list[int]]
     return rows
 
 
+def infer_background_color(image: Image.Image) -> RGB:
+    width, height = image.size
+    border_pixels: list[RGB] = []
+    for x_pos in range(width):
+        border_pixels.append(cast(RGB, image.getpixel((x_pos, 0))))
+        border_pixels.append(cast(RGB, image.getpixel((x_pos, height - 1))))
+    for y_pos in range(1, height - 1):
+        border_pixels.append(cast(RGB, image.getpixel((0, y_pos))))
+        border_pixels.append(cast(RGB, image.getpixel((width - 1, y_pos))))
+    counts: dict[RGB, int] = {}
+    for pixel in border_pixels:
+        counts[pixel] = counts.get(pixel, 0) + 1
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
+def infer_active_crop(image: Image.Image, padding: int = 2) -> CropBox:
+    width, height = image.size
+    background = infer_background_color(image)
+    active_x: list[int] = []
+    active_y: list[int] = []
+    for y_pos in range(height):
+        for x_pos in range(width):
+            if cast(RGB, image.getpixel((x_pos, y_pos))) != background:
+                active_x.append(x_pos)
+                active_y.append(y_pos)
+    if not active_x or not active_y:
+        return CropBox(0, 0, width, height)
+    left = max(0, min(active_x) - padding)
+    top = max(0, min(active_y) - padding)
+    right = min(width, max(active_x) + 1 + padding)
+    bottom = min(height, max(active_y) + 1 + padding)
+    return CropBox(left, top, right, bottom)
+
+
 def resize_image(image: Image.Image, size: tuple[int, int], nearest: bool = False) -> Image.Image:
     resample = Image.Resampling.NEAREST if nearest else Image.Resampling.BILINEAR
     return image.resize(size, resample=resample)
@@ -176,6 +218,10 @@ def class_mask_to_image(mask: list[list[int]], palette: Palette) -> Image.Image:
         for x_pos, class_id in enumerate(row):
             image.putpixel((x_pos, y_pos), palette.colors[class_id])
     return image
+
+
+def crop_image(image: Image.Image, crop_box: CropBox) -> Image.Image:
+    return image.crop((crop_box.left, crop_box.top, crop_box.right, crop_box.bottom))
 
 
 class SimulationTopologyDataset:
@@ -223,8 +269,11 @@ class SimulationTopologyDataset:
     def __getitem__(self, index: int) -> dict[str, object]:
         torch, _ = _require_torch()
         sample = self.samples[index]
-        image = resize_image(load_rgb_image(sample.image_path), self.image_size, nearest=False)
-        target_image = resize_image(load_rgb_image(sample.target_path), self.image_size, nearest=True)
+        source_image = load_rgb_image(sample.image_path)
+        source_target = load_rgb_image(sample.target_path)
+        crop_box = infer_active_crop(source_target)
+        image = resize_image(crop_image(source_image, crop_box), self.image_size, nearest=False)
+        target_image = resize_image(crop_image(source_target, crop_box), self.image_size, nearest=True)
         image_data = list(image.getdata())
         channels = [
             [pixel[channel] / 255.0 for pixel in image_data]
@@ -288,3 +337,14 @@ def build_shared_palette(
             ]
         )
     return build_palette(samples)
+
+
+def compute_class_pixel_counts(dataset: SimulationTopologyDataset) -> list[int]:
+    counts = [0 for _ in range(dataset.palette.num_classes)]
+    for sample in dataset.samples:
+        target_image = resize_image(crop_image(load_rgb_image(sample.target_path), infer_active_crop(load_rgb_image(sample.target_path))), dataset.image_size, nearest=True)
+        target_mask = image_to_class_mask(target_image, dataset.palette)
+        for row in target_mask:
+            for class_id in row:
+                counts[class_id] += 1
+    return counts
