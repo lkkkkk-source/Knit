@@ -12,6 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-output", type=Path, required=True, help="Output val manifest")
     parser.add_argument("--train-per-class", type=int, default=10, help="Max train samples per class")
     parser.add_argument("--val-per-class", type=int, default=2, help="Max val samples per class")
+    parser.add_argument("--category", type=str, default=None, help="Optional category filter, for example `Tuck`.")
     return parser
 
 
@@ -29,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
         category = row.get("category")
         if not isinstance(category, str):
             raise ValueError(f"Missing category in manifest row: {row!r}")
+        if args.category is not None and category != args.category:
+            continue
         grouped.setdefault(category, []).append(row)
 
     train_rows: list[dict[str, object]] = []
