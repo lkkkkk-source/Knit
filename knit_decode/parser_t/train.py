@@ -209,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         "device": str(device),
         "model": args.model,
         "num_classes": dataset.num_classes,
+        "class_names": dataset.class_names,
         "num_samples": len(dataset),
         "num_val_samples": 0 if val_dataloader is None else len(cast(object, val_dataloader).dataset),
         "class_pixel_counts": class_pixel_counts,
