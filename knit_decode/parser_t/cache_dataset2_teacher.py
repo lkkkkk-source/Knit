@@ -30,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-size", type=int, nargs=2, default=(160, 160), metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--grid-size", type=int, nargs=2, default=(20, 20), metavar=("ROWS", "COLS"))
     parser.add_argument("--top-k-colors", type=int, default=2)
+    parser.add_argument("--shard-size", type=int, default=512, help="Number of samples per cached shard")
+    parser.add_argument("--preview-count", type=int, default=8, help="How many preview PNG pairs to keep for inspection")
     return parser
 
 
@@ -69,8 +71,7 @@ def _build_vocabulary_with_progress(
     print(f"[phase 1/2] building vocabulary from {total} samples")
     for index, sample in enumerate(samples, start=1):
         target_image = load_rgb_image(sample.target_path)
-        crop_box = infer_active_crop(target_image)
-        resized = resize_image(crop_image(target_image, crop_box), image_size, nearest=True)
+        resized = resize_image(target_image, image_size, nearest=True)
         color_grid = downsample_color_grid(resized, grid_size)
         for row in color_grid:
             counter.update(row)
@@ -107,30 +108,59 @@ def main(argv: list[str] | None = None) -> int:
     cached_rows: list[dict[str, object]] = []
     total = len(dataset.samples)
     print(f"[phase 2/2] writing cache for {total} samples")
+    torch, _ = dataset._require_torch() if False else __import__("importlib").import_module("torch"), None
+    shard_images: list[object] = []
+    shard_targets: list[object] = []
+    shard_sample_ids: list[str] = []
+    shard_index = 0
+    class_pixel_counts = [0 for _ in range(dataset.num_classes)]
+    preview_dir = args.output_root / "preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
     for index, sample in enumerate(dataset.samples, start=1):
         source_image = load_rgb_image(sample.image_path)
         source_target = load_rgb_image(sample.target_path)
-        crop_box = infer_active_crop(source_target)
-        image = resize_image(crop_image(source_image, crop_box), dataset.image_size, nearest=False).convert("L")
-        target_image = resize_image(crop_image(source_target, crop_box), dataset.image_size, nearest=True)
+        image = resize_image(source_image, dataset.image_size, nearest=False).convert("L")
+        target_image = resize_image(source_target, dataset.image_size, nearest=True)
         color_grid = downsample_color_grid(target_image, dataset.grid_size)
         class_grid = color_grid_to_class_grid(color_grid, dataset.vocabulary)
+        image_tensor = torch.tensor(list(image.getdata()), dtype=torch.uint8).reshape(1, image.height, image.width)
+        target_tensor = torch.tensor(class_grid, dtype=torch.long)
+        shard_images.append(image_tensor)
+        shard_targets.append(target_tensor)
+        shard_sample_ids.append(sample.sample_id)
+        for row in class_grid:
+            for class_id in row:
+                class_pixel_counts[class_id] += 1
 
-        sample_dir = args.output_root / sample.sample_id.replace("/", "__")
-        sample_dir.mkdir(parents=True, exist_ok=True)
-        image_path = sample_dir / "input.png"
-        target_path = sample_dir / "target_grid.json"
-        image.save(image_path)
-        write_grid_json(target_path, class_grid)
+        if index <= args.preview_count:
+            sample_dir = preview_dir / sample.sample_id.replace("/", "__")
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            image.save(sample_dir / "input.png")
+            mask_to_image(class_grid, dataset.vocabulary).save(sample_dir / "target.png")
 
-        cached_rows.append(
-            {
-                "sample_id": sample.sample_id,
-                "category": sample.category,
-                "image_path": str(image_path.relative_to(args.output_root)).replace("\\", "/"),
-                "target_path": str(target_path.relative_to(args.output_root)).replace("\\", "/"),
-            }
-        )
+        if len(shard_images) >= args.shard_size or index == total:
+            shard_path = args.output_root / f"train_shard_{shard_index:04d}.pt"
+            torch.save(
+                {
+                    "images": torch.stack(shard_images),
+                    "targets": torch.stack(shard_targets),
+                    "sample_ids": shard_sample_ids,
+                },
+                shard_path,
+            )
+            for item_offset, sample_id in enumerate(shard_sample_ids):
+                cached_rows.append(
+                    {
+                        "sample_id": sample_id,
+                        "category": sample_id.split("/", 1)[0] if "/" in sample_id else sample_id.split("_", 1)[0],
+                        "shard_path": str(shard_path.relative_to(args.output_root)).replace("\\", "/"),
+                        "item_index": item_offset,
+                    }
+                )
+            shard_images = []
+            shard_targets = []
+            shard_sample_ids = []
+            shard_index += 1
         _print_progress(index, total)
 
     print()
@@ -139,7 +169,18 @@ def main(argv: list[str] | None = None) -> int:
     if text:
         text += "\n"
     manifest_path.write_text(text, encoding="utf-8")
-    print(json.dumps({"cache_root": str(args.output_root), "manifest": str(manifest_path), "samples": len(cached_rows)}, indent=2, ensure_ascii=False))
+    metadata = {
+        "cache_root": str(args.output_root),
+        "manifest": str(manifest_path),
+        "samples": len(cached_rows),
+        "num_shards": shard_index,
+        "class_pixel_counts": class_pixel_counts,
+        "top_k_colors": args.top_k_colors,
+        "image_size": list(image_size),
+        "grid_size": list(grid_size),
+    }
+    (args.output_root / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(metadata, indent=2, ensure_ascii=False))
     return 0
 
 

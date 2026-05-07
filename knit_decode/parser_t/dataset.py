@@ -19,9 +19,11 @@ OTHER_COLOR: RGB = (255, 0, 255)
 
 class ParserSample(TypedDict):
     sample_id: str
+    category: str
     image_path: str
     target_path: str
-    category: str
+    shard_path: str
+    item_index: int
 
 
 class ParserBatch(TypedDict):
@@ -125,17 +127,23 @@ def load_parser_manifest(path: str | Path) -> list[ParserSample]:
         sample_id = payload.get("sample_id")
         input_path = payload.get("image_path", payload.get("input_path"))
         target_path = payload.get("target_path")
+        shard_path = payload.get("shard_path")
+        item_index = payload.get("item_index")
         category = payload.get("category")
         if category is None and isinstance(sample_id, str):
             category = sample_id.split("/", 1)[0] if "/" in sample_id else sample_id.split("_", 1)[0]
-        if not isinstance(sample_id, str) or not isinstance(input_path, str) or not isinstance(target_path, str) or not isinstance(category, str):
+        uses_paths = isinstance(input_path, str) and isinstance(target_path, str)
+        uses_shard = isinstance(shard_path, str) and isinstance(item_index, int)
+        if not isinstance(sample_id, str) or not isinstance(category, str) or (not uses_paths and not uses_shard):
             raise ValueError(f"Invalid parser sample entry in {manifest_path}: {payload!r}")
         rows.append(
             {
                 "sample_id": sample_id,
-                "image_path": input_path,
-                "target_path": target_path,
                 "category": category,
+                "image_path": "" if not uses_paths else input_path,
+                "target_path": "" if not uses_paths else target_path,
+                "shard_path": "" if not uses_shard else shard_path,
+                "item_index": -1 if not uses_shard else item_index,
             }
         )
     return rows
@@ -346,15 +354,18 @@ class SimulationTopologyDataset:
             SegmentationTarget(
                 sample_id=sample["sample_id"],
                 category=sample["category"],
-                image_path=(self.root / sample["image_path"]).resolve(),
-                target_path=(self.root / sample["target_path"]).resolve(),
+                image_path=Path() if not sample["image_path"] else (self.root / sample["image_path"]).resolve(),
+                target_path=Path() if not sample["target_path"] else (self.root / sample["target_path"]).resolve(),
             )
             for sample in raw_samples
         ]
+        self.raw_samples = raw_samples
         self.cached_mode = all(sample.target_path.suffix.lower() == ".json" for sample in self.samples) if self.samples else False
+        self.shard_mode = all(bool(sample["shard_path"]) for sample in raw_samples) if raw_samples else False
+        self._shard_cache: dict[Path, dict[str, object]] = {}
         if vocabulary is not None:
             self.vocabulary = vocabulary
-        elif self.cached_mode:
+        elif self.cached_mode or self.shard_mode:
             vocab_path = self.manifest_path.parent / "vocabulary.json"
             self.vocabulary = read_vocabulary(vocab_path)
         else:
@@ -389,6 +400,22 @@ class SimulationTopologyDataset:
     def __getitem__(self, index: int) -> dict[str, object]:
         torch, _ = _require_torch()
         sample = self.samples[index]
+        raw_sample = self.raw_samples[index]
+        if self.shard_mode:
+            shard_path = (self.manifest_path.parent / raw_sample["shard_path"]).resolve()
+            shard = self._shard_cache.get(shard_path)
+            if shard is None:
+                shard = getattr(torch, "load")(shard_path, map_location="cpu")
+                self._shard_cache[shard_path] = cast(dict[str, object], shard)
+            item_index = raw_sample["item_index"]
+            image_tensor = cast(object, shard["images"])[item_index].to(dtype=getattr(torch, "float32")) / 255.0
+            target_tensor = cast(object, shard["targets"])[item_index].to(dtype=getattr(torch, "long"))
+            return {
+                "sample_id": sample.sample_id,
+                "category": sample.category,
+                "image": image_tensor,
+                "target": target_tensor,
+            }
         if self.cached_mode:
             image = load_grayscale_image(sample.image_path)
             image_data = list(image.getdata())
@@ -399,9 +426,8 @@ class SimulationTopologyDataset:
         else:
             source_image = load_rgb_image(sample.image_path)
             source_target = load_rgb_image(sample.target_path)
-            crop_box = infer_active_crop(source_target)
-            image = resize_image(crop_image(source_image, crop_box), self.image_size, nearest=False).convert("L")
-            target_image = resize_image(crop_image(source_target, crop_box), self.image_size, nearest=True)
+            image = resize_image(source_image, self.image_size, nearest=False).convert("L")
+            target_image = resize_image(source_target, self.image_size, nearest=True)
             image_data = list(image.getdata())
             height, width = image.height, image.width
             image_tensor = getattr(torch, "tensor")([pixel / 255.0 for pixel in image_data], dtype=getattr(torch, "float32")).reshape(1, height, width)
@@ -436,6 +462,9 @@ def build_parser_dataloader(
     grid_size: tuple[int, int] = (20, 20),
     vocabulary: ColorVocabulary | None = None,
     top_k_colors: int = 4,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    persistent_workers: bool = False,
 ) -> object:
     _, data = _require_torch()
     dataset = SimulationTopologyDataset(
@@ -446,10 +475,26 @@ def build_parser_dataloader(
         top_k_colors=top_k_colors,
     )
     dataloader_cls = getattr(data, "DataLoader")
-    return dataloader_cls(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_parser_batch), dataset
+    worker_persistent = persistent_workers if num_workers > 0 else False
+    return dataloader_cls(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=collate_parser_batch,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=worker_persistent,
+    ), dataset
 
 
 def compute_class_pixel_counts(dataset: SimulationTopologyDataset) -> list[int]:
+    metadata_path = dataset.manifest_path.parent / "metadata.json"
+    if metadata_path.exists():
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        counts = payload.get("class_pixel_counts")
+        if isinstance(counts, list) and all(isinstance(value, int) for value in counts):
+            return [int(value) for value in counts]
+
     counts = [0 for _ in range(dataset.num_classes)]
     if dataset.cached_mode:
         for sample in dataset.samples:
@@ -459,12 +504,23 @@ def compute_class_pixel_counts(dataset: SimulationTopologyDataset) -> list[int]:
                     counts[class_id] += 1
         return counts
 
+    if dataset.shard_mode:
+        torch, _ = _require_torch()
+        seen_shards: set[Path] = set()
+        for raw_sample in dataset.raw_samples:
+            shard_path = (dataset.manifest_path.parent / raw_sample["shard_path"]).resolve()
+            if shard_path in seen_shards:
+                continue
+            seen_shards.add(shard_path)
+            shard = getattr(torch, "load")(shard_path, map_location="cpu")
+            targets = cast(object, shard["targets"])
+            bincount = getattr(torch, "bincount")(targets.reshape(-1), minlength=dataset.num_classes).tolist()
+            for class_id, value in enumerate(bincount):
+                counts[class_id] += int(value)
+        return counts
+
     for sample in dataset.samples:
-        target_image = resize_image(
-            crop_image(load_rgb_image(sample.target_path), infer_active_crop(load_rgb_image(sample.target_path))),
-            dataset.image_size,
-            nearest=True,
-        )
+        target_image = resize_image(load_rgb_image(sample.target_path), dataset.image_size, nearest=True)
         color_grid = downsample_color_grid(target_image, dataset.grid_size)
         class_grid = color_grid_to_class_grid(color_grid, dataset.vocabulary)
         for row in class_grid:

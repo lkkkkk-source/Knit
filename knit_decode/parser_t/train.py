@@ -37,6 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=str, default="kaspar", help="Parser backbone name. Default: kaspar.")
     parser.add_argument("--top-k-colors", type=int, default=4, help="Number of most frequent grid colors to keep as explicit classes.")
     parser.add_argument("--use-class-weights", action="store_true", help="Use mild class weights based on inverse square-root frequency.")
+    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker count.")
+    parser.add_argument("--pin-memory", action="store_true", help="Enable DataLoader pin_memory.")
+    parser.add_argument("--persistent-workers", action="store_true", help="Keep DataLoader workers alive between epochs.")
+    parser.add_argument("--amp", action="store_true", help="Enable CUDA automatic mixed precision.")
     return parser
 
 
@@ -60,6 +64,11 @@ def _print_progress(stage: str, current: int, total: int, extra: str = "") -> No
 
 def _finish_progress() -> None:
     print(flush=True)
+
+
+def _autocast_context(torch: object, enabled: bool) -> object:
+    cuda_amp = getattr(getattr(torch, "cuda"), "amp")
+    return getattr(cuda_amp, "autocast")(enabled=enabled)
 
 
 def _compute_segmentation_metrics(confusion: list[list[int]]) -> dict[str, object]:
@@ -108,6 +117,7 @@ def _evaluate_model(
     num_classes: int,
     vocabulary: object,
     class_weights: object | None,
+    use_amp: bool,
 ) -> dict[str, object]:
     model.eval()
     total_loss = 0.0
@@ -126,8 +136,9 @@ def _evaluate_model(
         for batch in dataloader:
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
-            logits = model(images)
-            loss = segmentation_cross_entropy(logits, targets)
+            with _autocast_context(torch, use_amp):
+                logits = model(images)
+                loss = segmentation_cross_entropy(logits, targets)
             total_loss += float(loss.item())
             batch_count += 1
             _print_progress("val", batch_count, total_batches, f"loss={total_loss / max(1, batch_count):.6f}")
@@ -166,6 +177,12 @@ def main(argv: list[str] | None = None) -> int:
 
     torch, optim = _require_torch()
     device = _resolve_device(torch, args.device)
+    if str(device).startswith("cuda"):
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+        if hasattr(torch, "backends") and hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.benchmark = True
+    use_amp = bool(args.amp and str(device).startswith("cuda"))
     _, train_dataset = build_parser_dataloader(
         args.manifest,
         batch_size=args.batch_size,
@@ -174,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
         grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
         vocabulary=None,
         top_k_colors=args.top_k_colors,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+        persistent_workers=args.persistent_workers,
     )
     vocabulary = train_dataset.vocabulary
     dataloader, dataset = build_parser_dataloader(
@@ -184,6 +204,9 @@ def main(argv: list[str] | None = None) -> int:
         grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
         vocabulary=vocabulary,
         top_k_colors=args.top_k_colors,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+        persistent_workers=args.persistent_workers,
     )
     val_dataloader = None
     if args.val_manifest is not None:
@@ -195,11 +218,15 @@ def main(argv: list[str] | None = None) -> int:
             grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
             vocabulary=vocabulary,
             top_k_colors=args.top_k_colors,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_memory,
+            persistent_workers=args.persistent_workers,
         )
 
     model = build_parser_model(args.model, num_classes=dataset.num_classes)
     model.to(device)
     optimizer = getattr(optim, "Adam")(model.parameters(), lr=args.learning_rate)
+    scaler = getattr(getattr(torch, "cuda"), "amp").GradScaler(enabled=use_amp)
 
     class_pixel_counts = compute_class_pixel_counts(dataset)
     class_weights = None
@@ -227,11 +254,17 @@ def main(argv: list[str] | None = None) -> int:
         for batch in dataloader:
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
-            logits = model(images)
-            loss = segmentation_cross_entropy(logits, targets, weight=class_weights)
+            with _autocast_context(torch, use_amp):
+                logits = model(images)
+                loss = segmentation_cross_entropy(logits, targets, weight=class_weights)
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
             total_loss += float(loss.item())
             batch_count += 1
             _print_progress("train", batch_count, total_batches, f"loss={total_loss / max(1, batch_count):.6f}")
@@ -250,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
                 dataset.num_classes,
                 vocabulary,
                 class_weights,
+                use_amp,
             )
             epoch_metrics["val_loss"] = val_metrics["loss"]
             epoch_metrics["val_pixel_accuracy"] = val_metrics["pixel_accuracy"]
@@ -282,8 +316,12 @@ def main(argv: list[str] | None = None) -> int:
         "grid_size": [int(args.grid_size[0]), int(args.grid_size[1])],
         "learning_rate": args.learning_rate,
         "device": str(device),
+        "amp": use_amp,
         "model": args.model,
         "top_k_colors": args.top_k_colors,
+        "num_workers": args.num_workers,
+        "pin_memory": bool(args.pin_memory),
+        "persistent_workers": bool(args.persistent_workers),
         "num_classes": dataset.num_classes,
         "class_names": dataset.class_names,
         "num_samples": len(dataset),
