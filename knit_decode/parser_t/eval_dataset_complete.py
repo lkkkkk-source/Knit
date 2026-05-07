@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import shutil
 from typing import cast
 
 from PIL import Image
@@ -173,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
     )
+    sample_lookup = {sample.sample_id: sample for sample in dataset.samples}
 
     device = _resolve_device(torch, args.device)
     if str(device).startswith("cuda") and hasattr(torch, "set_float32_matmul_precision"):
@@ -225,9 +227,25 @@ def main(argv: list[str] | None = None) -> int:
                 if vis_written < args.num_vis:
                     sample_dir = vis_dir / sample_ids[sample_index].replace("/", "__")
                     sample_dir.mkdir(parents=True, exist_ok=True)
+                    sample = sample_lookup[sample_ids[sample_index]]
                     _save_grayscale_tensor(torch, image_rows[sample_index], sample_dir / "input.png")
                     mask_to_image(prediction_mask, vocabulary).save(sample_dir / "pred.png")
                     mask_to_image(target_mask, vocabulary).save(sample_dir / "target.png")
+                    shutil.copy2(sample.image_path, sample_dir / "input_source.png")
+                    shutil.copy2(sample.target_path, sample_dir / "gt_source.png")
+                    (sample_dir / "paths.json").write_text(
+                        json.dumps(
+                            {
+                                "sample_id": sample.sample_id,
+                                "category": sample.category,
+                                "input_source": str(sample.image_path),
+                                "gt_source": str(sample.target_path),
+                            },
+                            indent=2,
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
                     vis_written += 1
     _finish_progress()
 
