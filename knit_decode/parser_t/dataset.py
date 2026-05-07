@@ -66,6 +66,30 @@ class ColorVocabulary:
             return self.top_colors[class_id]
         return OTHER_COLOR
 
+    def to_jsonable(self) -> dict[str, object]:
+        return {
+            "top_colors": [list(color) for color in self.top_colors],
+            "class_names": list(self.class_names),
+        }
+
+    @staticmethod
+    def from_jsonable(payload: dict[str, object]) -> "ColorVocabulary":
+        raw_colors = payload.get("top_colors")
+        raw_names = payload.get("class_names")
+        if not isinstance(raw_colors, list) or not isinstance(raw_names, list):
+            raise ValueError("Invalid vocabulary payload")
+        top_colors = tuple(
+            cast(RGB, tuple(int(channel) for channel in color))
+            for color in raw_colors
+            if isinstance(color, list) and len(color) == 3
+        )
+        class_names = tuple(str(name) for name in raw_names)
+        return ColorVocabulary(
+            top_colors=top_colors,
+            color_to_class={color: idx for idx, color in enumerate(top_colors)},
+            class_names=class_names,
+        )
+
 
 _HEM_PREFIX_RE = re.compile(r"^(\d+[A-Za-z]*)")
 
@@ -164,6 +188,15 @@ def load_rgb_image(path: Path) -> Image.Image:
         raise OSError(f"Failed to load image {path}: {error}") from error
 
 
+def load_grayscale_image(path: Path) -> Image.Image:
+    try:
+        with Image.open(path) as image:
+            image.load()
+            return image.convert("L")
+    except OSError as error:
+        raise OSError(f"Failed to load image {path}: {error}") from error
+
+
 def infer_background_color(image: Image.Image) -> RGB:
     width, height = image.size
     border_pixels: list[RGB] = []
@@ -257,6 +290,43 @@ def mask_to_image(mask: list[list[int]], vocabulary: ColorVocabulary) -> Image.I
     return image
 
 
+def write_vocabulary(path: Path, vocabulary: ColorVocabulary) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(vocabulary.to_jsonable(), indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def read_vocabulary(path: Path) -> ColorVocabulary:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid vocabulary file: {path}")
+    return ColorVocabulary.from_jsonable(payload)
+
+
+def write_grid_json(path: Path, grid: list[list[int]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "rows": len(grid),
+        "cols": len(grid[0]) if grid else 0,
+        "grid": grid,
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def read_grid_json(path: Path) -> list[list[int]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid cached grid file: {path}")
+    grid = payload.get("grid")
+    if not isinstance(grid, list):
+        raise ValueError(f"Missing grid in cached grid file: {path}")
+    rows: list[list[int]] = []
+    for row in grid:
+        if not isinstance(row, list):
+            raise ValueError(f"Invalid row in cached grid file: {path}")
+        rows.append([int(value) for value in row])
+    return rows
+
+
 class SimulationTopologyDataset:
     def __init__(
         self,
@@ -281,12 +351,19 @@ class SimulationTopologyDataset:
             )
             for sample in raw_samples
         ]
-        self.vocabulary = vocabulary if vocabulary is not None else build_topk_color_vocabulary(
-            self.samples,
-            image_size=self.image_size,
-            grid_size=self.grid_size,
-            top_k=top_k_colors,
-        )
+        self.cached_mode = all(sample.target_path.suffix.lower() == ".json" for sample in self.samples) if self.samples else False
+        if vocabulary is not None:
+            self.vocabulary = vocabulary
+        elif self.cached_mode:
+            vocab_path = self.manifest_path.parent / "vocabulary.json"
+            self.vocabulary = read_vocabulary(vocab_path)
+        else:
+            self.vocabulary = build_topk_color_vocabulary(
+                self.samples,
+                image_size=self.image_size,
+                grid_size=self.grid_size,
+                top_k=top_k_colors,
+            )
         self.num_classes = self.vocabulary.num_classes
         self.class_names = list(self.vocabulary.class_names)
 
@@ -312,17 +389,25 @@ class SimulationTopologyDataset:
     def __getitem__(self, index: int) -> dict[str, object]:
         torch, _ = _require_torch()
         sample = self.samples[index]
-        source_image = load_rgb_image(sample.image_path)
-        source_target = load_rgb_image(sample.target_path)
-        crop_box = infer_active_crop(source_target)
-        image = resize_image(crop_image(source_image, crop_box), self.image_size, nearest=False).convert("L")
-        target_image = resize_image(crop_image(source_target, crop_box), self.image_size, nearest=True)
-        image_data = list(image.getdata())
-        height, width = image.height, image.width
-        image_tensor = getattr(torch, "tensor")([pixel / 255.0 for pixel in image_data], dtype=getattr(torch, "float32")).reshape(1, height, width)
-        color_grid = downsample_color_grid(target_image, self.grid_size)
-        class_grid = color_grid_to_class_grid(color_grid, self.vocabulary)
-        target_tensor = getattr(torch, "tensor")(class_grid, dtype=getattr(torch, "long"))
+        if self.cached_mode:
+            image = load_grayscale_image(sample.image_path)
+            image_data = list(image.getdata())
+            height, width = image.height, image.width
+            image_tensor = getattr(torch, "tensor")([pixel / 255.0 for pixel in image_data], dtype=getattr(torch, "float32")).reshape(1, height, width)
+            class_grid = read_grid_json(sample.target_path)
+            target_tensor = getattr(torch, "tensor")(class_grid, dtype=getattr(torch, "long"))
+        else:
+            source_image = load_rgb_image(sample.image_path)
+            source_target = load_rgb_image(sample.target_path)
+            crop_box = infer_active_crop(source_target)
+            image = resize_image(crop_image(source_image, crop_box), self.image_size, nearest=False).convert("L")
+            target_image = resize_image(crop_image(source_target, crop_box), self.image_size, nearest=True)
+            image_data = list(image.getdata())
+            height, width = image.height, image.width
+            image_tensor = getattr(torch, "tensor")([pixel / 255.0 for pixel in image_data], dtype=getattr(torch, "float32")).reshape(1, height, width)
+            color_grid = downsample_color_grid(target_image, self.grid_size)
+            class_grid = color_grid_to_class_grid(color_grid, self.vocabulary)
+            target_tensor = getattr(torch, "tensor")(class_grid, dtype=getattr(torch, "long"))
         return {
             "sample_id": sample.sample_id,
             "category": sample.category,
