@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 import json
@@ -11,9 +12,7 @@ from typing import TypedDict, cast
 from PIL import Image, ImageFile
 
 
-JsonObject = dict[str, object]
 RGB = tuple[int, int, int]
-
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
@@ -37,16 +36,6 @@ class SegmentationTarget:
     category: str
     image_path: Path
     target_path: Path
-
-
-@dataclass(frozen=True)
-class Palette:
-    colors: tuple[RGB, ...]
-    color_to_index: dict[RGB, int]
-
-    @property
-    def num_classes(self) -> int:
-        return len(self.colors)
 
 
 @dataclass(frozen=True)
@@ -149,28 +138,6 @@ def load_rgb_image(path: Path) -> Image.Image:
         raise OSError(f"Failed to load image {path}: {error}") from error
 
 
-def build_palette(samples: Sequence[SegmentationTarget]) -> Palette:
-    unique_colors: set[RGB] = set()
-    for sample in samples:
-        image = load_rgb_image(sample.target_path)
-        unique_colors.update(cast(set[RGB], set(image.getdata())))
-    sorted_colors = tuple(sorted(unique_colors))
-    return Palette(colors=sorted_colors, color_to_index={color: idx for idx, color in enumerate(sorted_colors)})
-
-
-def image_to_class_mask(image: Image.Image, palette: Palette) -> list[list[int]]:
-    rows: list[list[int]] = []
-    for y_pos in range(image.height):
-        row: list[int] = []
-        for x_pos in range(image.width):
-            color = cast(RGB, image.getpixel((x_pos, y_pos)))
-            if color not in palette.color_to_index:
-                raise KeyError(f"Color {color!r} is not in the parser palette")
-            row.append(palette.color_to_index[color])
-        rows.append(row)
-    return rows
-
-
 def infer_background_color(image: Image.Image) -> RGB:
     width, height = image.size
     border_pixels: list[RGB] = []
@@ -180,10 +147,7 @@ def infer_background_color(image: Image.Image) -> RGB:
     for y_pos in range(1, height - 1):
         border_pixels.append(cast(RGB, image.getpixel((0, y_pos))))
         border_pixels.append(cast(RGB, image.getpixel((width - 1, y_pos))))
-    counts: dict[RGB, int] = {}
-    for pixel in border_pixels:
-        counts[pixel] = counts.get(pixel, 0) + 1
-    return max(counts.items(), key=lambda item: item[1])[0]
+    return Counter(border_pixels).most_common(1)[0][0]
 
 
 def infer_active_crop(image: Image.Image, padding: int = 2) -> CropBox:
@@ -205,23 +169,37 @@ def infer_active_crop(image: Image.Image, padding: int = 2) -> CropBox:
     return CropBox(left, top, right, bottom)
 
 
+def crop_image(image: Image.Image, crop_box: CropBox) -> Image.Image:
+    return image.crop((crop_box.left, crop_box.top, crop_box.right, crop_box.bottom))
+
+
 def resize_image(image: Image.Image, size: tuple[int, int], nearest: bool = False) -> Image.Image:
     resample = Image.Resampling.NEAREST if nearest else Image.Resampling.BILINEAR
     return image.resize(size, resample=resample)
 
 
-def class_mask_to_image(mask: list[list[int]], palette: Palette) -> Image.Image:
+def build_structure_mask(image: Image.Image) -> list[list[int]]:
+    pixels = list(cast(list[RGB], list(image.getdata())))
+    dominant_color = Counter(pixels).most_common(1)[0][0]
+    rows: list[list[int]] = []
+    for y_pos in range(image.height):
+        row: list[int] = []
+        for x_pos in range(image.width):
+            color = cast(RGB, image.getpixel((x_pos, y_pos)))
+            row.append(0 if color == dominant_color else 1)
+        rows.append(row)
+    return rows
+
+
+def mask_to_image(mask: list[list[int]]) -> Image.Image:
     height = len(mask)
     width = len(mask[0]) if height else 0
     image = Image.new("RGB", (width, height))
+    colors = {0: (0, 0, 0), 1: (255, 255, 255)}
     for y_pos, row in enumerate(mask):
         for x_pos, class_id in enumerate(row):
-            image.putpixel((x_pos, y_pos), palette.colors[class_id])
+            image.putpixel((x_pos, y_pos), colors[class_id])
     return image
-
-
-def crop_image(image: Image.Image, crop_box: CropBox) -> Image.Image:
-    return image.crop((crop_box.left, crop_box.top, crop_box.right, crop_box.bottom))
 
 
 class SimulationTopologyDataset:
@@ -230,7 +208,6 @@ class SimulationTopologyDataset:
         manifest_path: str | Path,
         root: str | Path | None = None,
         image_size: tuple[int, int] = (128, 128),
-        palette: Palette | None = None,
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.root = Path(root) if root is not None else self._infer_root(self.manifest_path)
@@ -245,7 +222,7 @@ class SimulationTopologyDataset:
             )
             for sample in raw_samples
         ]
-        self.palette = palette if palette is not None else build_palette(self.samples)
+        self.num_classes = 2
 
     @staticmethod
     def _infer_root(manifest_path: Path) -> Path:
@@ -275,13 +252,10 @@ class SimulationTopologyDataset:
         image = resize_image(crop_image(source_image, crop_box), self.image_size, nearest=False)
         target_image = resize_image(crop_image(source_target, crop_box), self.image_size, nearest=True)
         image_data = list(image.getdata())
-        channels = [
-            [pixel[channel] / 255.0 for pixel in image_data]
-            for channel in range(3)
-        ]
+        channels = [[pixel[channel] / 255.0 for pixel in image_data] for channel in range(3)]
         height, width = image.height, image.width
         image_tensor = getattr(torch, "tensor")(channels, dtype=getattr(torch, "float32")).reshape(3, height, width)
-        target_mask = image_to_class_mask(target_image, self.palette)
+        target_mask = build_structure_mask(target_image)
         target_tensor = getattr(torch, "tensor")(target_mask, dtype=getattr(torch, "long"))
         return {
             "sample_id": sample.sample_id,
@@ -308,42 +282,18 @@ def build_parser_dataloader(
     batch_size: int,
     shuffle: bool,
     image_size: tuple[int, int] = (128, 128),
-    palette: Palette | None = None,
 ) -> object:
     _, data = _require_torch()
-    dataset = SimulationTopologyDataset(manifest_path, image_size=image_size, palette=palette)
+    dataset = SimulationTopologyDataset(manifest_path, image_size=image_size)
     dataloader_cls = getattr(data, "DataLoader")
     return dataloader_cls(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_parser_batch), dataset
 
 
-def build_shared_palette(
-    manifest_paths: Sequence[str | Path],
-    image_size: tuple[int, int] = (128, 128),
-) -> Palette:
-    samples: list[SegmentationTarget] = []
-    for manifest_path in manifest_paths:
-        manifest = Path(manifest_path)
-        root = SimulationTopologyDataset._infer_root(manifest)
-        raw_samples = load_parser_manifest(manifest)
-        samples.extend(
-            [
-                SegmentationTarget(
-                    sample_id=sample["sample_id"],
-                    category=sample["category"],
-                    image_path=root / sample["image_path"],
-                    target_path=root / sample["target_path"],
-                )
-                for sample in raw_samples
-            ]
-        )
-    return build_palette(samples)
-
-
 def compute_class_pixel_counts(dataset: SimulationTopologyDataset) -> list[int]:
-    counts = [0 for _ in range(dataset.palette.num_classes)]
+    counts = [0 for _ in range(dataset.num_classes)]
     for sample in dataset.samples:
         target_image = resize_image(crop_image(load_rgb_image(sample.target_path), infer_active_crop(load_rgb_image(sample.target_path))), dataset.image_size, nearest=True)
-        target_mask = image_to_class_mask(target_image, dataset.palette)
+        target_mask = build_structure_mask(target_image)
         for row in target_mask:
             for class_id in row:
                 counts[class_id] += 1
