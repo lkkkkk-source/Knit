@@ -451,6 +451,14 @@ def build_parser_dataloader(
 
 def compute_class_pixel_counts(dataset: SimulationTopologyDataset) -> list[int]:
     counts = [0 for _ in range(dataset.num_classes)]
+    if dataset.cached_mode:
+        for sample in dataset.samples:
+            class_grid = read_grid_json(sample.target_path)
+            for row in class_grid:
+                for class_id in row:
+                    counts[class_id] += 1
+        return counts
+
     for sample in dataset.samples:
         target_image = resize_image(
             crop_image(load_rgb_image(sample.target_path), infer_active_crop(load_rgb_image(sample.target_path))),
