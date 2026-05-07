@@ -8,11 +8,13 @@ from pathlib import Path
 import re
 from typing import TypedDict, cast
 
-from PIL import Image
+from PIL import Image, ImageFile
 
 
 JsonObject = dict[str, object]
 RGB = tuple[int, int, int]
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 class ParserSample(TypedDict):
@@ -131,8 +133,12 @@ def build_parser_manifest_from_dataset_complete(dataset_root: str | Path, output
 
 
 def load_rgb_image(path: Path) -> Image.Image:
-    with Image.open(path) as image:
-        return image.convert("RGB")
+    try:
+        with Image.open(path) as image:
+            image.load()
+            return image.convert("RGB")
+    except OSError as error:
+        raise OSError(f"Failed to load image {path}: {error}") from error
 
 
 def build_palette(samples: Sequence[SegmentationTarget]) -> Palette:
