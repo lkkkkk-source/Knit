@@ -7,7 +7,10 @@ from pathlib import Path
 from PIL import Image
 
 from .dataset import (
+    ColorVocabulary,
     SimulationTopologyDataset,
+    SegmentationTarget,
+    build_topk_color_vocabulary,
     crop_image,
     downsample_color_grid,
     infer_active_crop,
@@ -38,14 +41,64 @@ def _print_progress(current: int, total: int) -> None:
     print(f"\r[{bar}] {current}/{total}", end="", flush=True)
 
 
+def _build_samples_from_manifest(manifest_path: Path) -> tuple[list[SegmentationTarget], Path]:
+    raw_samples = load_parser_manifest(manifest_path)
+    root = SimulationTopologyDataset._infer_root(manifest_path)
+    samples = [
+        SegmentationTarget(
+            sample_id=sample["sample_id"],
+            category=sample["category"],
+            image_path=(root / sample["image_path"]).resolve(),
+            target_path=(root / sample["target_path"]).resolve(),
+        )
+        for sample in raw_samples
+    ]
+    return samples, root
+
+
+def _build_vocabulary_with_progress(
+    samples: list[SegmentationTarget],
+    image_size: tuple[int, int],
+    grid_size: tuple[int, int],
+    top_k: int,
+) -> ColorVocabulary:
+    from collections import Counter
+
+    counter: Counter[tuple[int, int, int]] = Counter()
+    total = len(samples)
+    print(f"[phase 1/2] building vocabulary from {total} samples")
+    for index, sample in enumerate(samples, start=1):
+        target_image = load_rgb_image(sample.target_path)
+        crop_box = infer_active_crop(target_image)
+        resized = resize_image(crop_image(target_image, crop_box), image_size, nearest=True)
+        color_grid = downsample_color_grid(resized, grid_size)
+        for row in color_grid:
+            counter.update(row)
+        _print_progress(index, total)
+    print()
+    top_colors = tuple(color for color, _ in counter.most_common(top_k))
+    class_names = tuple([f"color_{index}" for index in range(len(top_colors))] + ["other"])
+    return ColorVocabulary(
+        top_colors=top_colors,
+        color_to_class={color: idx for idx, color in enumerate(top_colors)},
+        class_names=class_names,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    image_size = (int(args.image_size[0]), int(args.image_size[1]))
+    grid_size = (int(args.grid_size[0]), int(args.grid_size[1]))
+    samples, root = _build_samples_from_manifest(args.manifest)
+    vocabulary = _build_vocabulary_with_progress(samples, image_size=image_size, grid_size=grid_size, top_k=args.top_k_colors)
     dataset = SimulationTopologyDataset(
         args.manifest,
-        image_size=(int(args.image_size[0]), int(args.image_size[1])),
-        grid_size=(int(args.grid_size[0]), int(args.grid_size[1])),
+        root=root,
+        image_size=image_size,
+        grid_size=grid_size,
+        vocabulary=vocabulary,
         top_k_colors=args.top_k_colors,
     )
     args.output_root.mkdir(parents=True, exist_ok=True)
@@ -53,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cached_rows: list[dict[str, object]] = []
     total = len(dataset.samples)
+    print(f"[phase 2/2] writing cache for {total} samples")
     for index, sample in enumerate(dataset.samples, start=1):
         source_image = load_rgb_image(sample.image_path)
         source_target = load_rgb_image(sample.target_path)

@@ -48,6 +48,19 @@ def _resolve_device(torch: object, device_name: str) -> object:
     return device_cls(device_name)
 
 
+def _print_progress(stage: str, current: int, total: int, extra: str = "") -> None:
+    width = 30
+    ratio = 0.0 if total <= 0 else current / total
+    filled = min(width, int(width * ratio))
+    bar = "#" * filled + "-" * (width - filled)
+    suffix = f" {extra}" if extra else ""
+    print(f"\r[{stage}] [{bar}] {current}/{total}{suffix}", end="", flush=True)
+
+
+def _finish_progress() -> None:
+    print(flush=True)
+
+
 def _compute_segmentation_metrics(confusion: list[list[int]]) -> dict[str, object]:
     num_classes = len(confusion)
     correct = sum(confusion[index][index] for index in range(num_classes))
@@ -96,6 +109,7 @@ def _evaluate_model(
 
     no_grad = getattr(torch, "no_grad")
     argmax = getattr(torch, "argmax")
+    total_batches = len(dataloader)
     with no_grad():
         for batch in dataloader:
             images = batch["images"].to(device)
@@ -104,6 +118,7 @@ def _evaluate_model(
             loss = segmentation_cross_entropy(logits, targets)
             total_loss += float(loss.item())
             batch_count += 1
+            _print_progress("val", batch_count, total_batches, f"loss={total_loss / max(1, batch_count):.6f}")
 
             predictions = argmax(logits, dim=1).detach().cpu().tolist()
             target_rows = targets.detach().cpu().tolist()
@@ -118,6 +133,7 @@ def _evaluate_model(
                     mask_to_image(prediction_mask, vocabulary).save(vis_dir / f"{sample_id}_pred.png")
                     mask_to_image(target_mask, vocabulary).save(vis_dir / f"{sample_id}_target.png")
                     vis_written += 1
+    _finish_progress()
 
     metrics = _compute_segmentation_metrics(confusion)
     metrics["loss"] = total_loss / max(1, batch_count)
@@ -170,9 +186,11 @@ def main(argv: list[str] | None = None) -> int:
 
     history: list[dict[str, object]] = []
     for epoch in range(args.epochs):
+        print(f"epoch {epoch + 1}/{args.epochs}")
         model.train()
         total_loss = 0.0
         batch_count = 0
+        total_batches = len(dataloader)
         for batch in dataloader:
             images = batch["images"].to(device)
             targets = batch["targets"].to(device)
@@ -183,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
             optimizer.step()
             total_loss += float(loss.item())
             batch_count += 1
+            _print_progress("train", batch_count, total_batches, f"loss={total_loss / max(1, batch_count):.6f}")
+        _finish_progress()
 
         mean_loss = total_loss / max(1, batch_count)
         epoch_metrics: dict[str, object] = {"epoch": epoch + 1, "train_loss": mean_loss}
