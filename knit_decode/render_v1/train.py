@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-from .dataset import build_render_dataloader
+from .dataset import build_render_dataloader, load_render_manifest
 from .diffusion import DiffusionSchedule
 from .model import CategoryConditionalUNet
 
@@ -70,6 +70,13 @@ def _finish_progress() -> None:
     print(flush=True)
 
 
+def _build_category_mapping(train_manifest: Path, val_manifest: Path | None) -> dict[str, int]:
+    categories = {sample["category"] for sample in load_render_manifest(train_manifest)}
+    if val_manifest is not None:
+        categories.update(sample["category"] for sample in load_render_manifest(val_manifest))
+    return {category: index for index, category in enumerate(sorted(categories))}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -84,12 +91,13 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(torch, "backends") and hasattr(torch.backends, "cudnn"):
             torch.backends.cudnn.benchmark = True
 
+    category_to_id = _build_category_mapping(args.manifest, args.val_manifest)
     train_loader, train_dataset = build_render_dataloader(
         args.manifest,
         batch_size=args.batch_size,
         shuffle=True,
         image_size=(int(args.image_size[0]), int(args.image_size[1])),
-        category_to_id=None,
+        category_to_id=category_to_id,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
@@ -101,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=args.batch_size,
             shuffle=False,
             image_size=(int(args.image_size[0]), int(args.image_size[1])),
-            category_to_id=train_dataset.category_to_id,
+            category_to_id=category_to_id,
             num_workers=args.num_workers,
             pin_memory=args.pin_memory,
             persistent_workers=args.persistent_workers,
