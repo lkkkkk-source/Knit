@@ -8,7 +8,7 @@ from typing import cast
 
 from .dataset import build_parser_dataloader, build_shared_palette, class_mask_to_image, compute_class_pixel_counts, Palette
 from .losses import shift_tolerant_cross_entropy
-from .model import TinyTopologyParser
+from .model import build_parser_model
 
 
 def _require_torch() -> tuple[object, object]:
@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, default="cpu", help="Training device, for example `cpu`, `cuda`, or `cuda:1`.")
     parser.add_argument("--val-manifest", type=Path, default=None, help="Optional validation manifest.")
     parser.add_argument("--num-vis", type=int, default=4, help="Number of validation predictions to export.")
+    parser.add_argument("--model", type=str, default="unet", help="Parser backbone name. Default: unet.")
     return parser
 
 
@@ -157,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             image_size=(int(args.image_size[0]), int(args.image_size[1])),
             palette=shared_palette,
         )
-    model = TinyTopologyParser(num_classes=dataset.palette.num_classes)
+    model = build_parser_model(args.model, num_classes=dataset.palette.num_classes)
     model.to(device)
     optimizer = getattr(optim, "Adam")(model.parameters(), lr=args.learning_rate)
     class_pixel_counts = compute_class_pixel_counts(dataset)
@@ -229,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         "image_size": [int(args.image_size[0]), int(args.image_size[1])],
         "learning_rate": args.learning_rate,
         "device": str(device),
+        "model": args.model,
         "num_classes": dataset.palette.num_classes,
         "num_samples": len(dataset),
         "num_val_samples": 0 if val_dataloader is None else len(cast(object, val_dataloader).dataset),
