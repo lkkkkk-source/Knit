@@ -31,6 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--persistent-workers", action="store_true")
     parser.add_argument("--num-vis", type=int, default=16)
+    parser.add_argument("--palette", type=Path, default=Path("parser_t_inverse/palette_mapping.json"))
+    parser.add_argument("--transfer-root", type=Path, default=Path("dataset2/transfer/Cable1_019_0_19/gray"))
+    parser.add_argument("--use-transfer", action="store_true")
+    parser.add_argument("--use-best-crop", action="store_true")
     return parser
 
 
@@ -72,9 +76,13 @@ def main(argv: list[str] | None = None) -> int:
 
     dataloader, _ = build_dataloader(
         args.manifest,
+        palette_path=args.palette,
         batch_size=args.batch_size,
         shuffle=False,
         image_size=cast(tuple[int, int], image_size),
+        transfer_root=args.transfer_root if args.use_transfer else None,
+        use_best_crop=args.use_best_crop,
+        augment_scale=0.0,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
