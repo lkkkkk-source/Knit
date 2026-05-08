@@ -37,10 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--persistent-workers", action="store_true")
     parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--teacher-mode", type=str, choices=("coarse", "inverse17"), default="coarse", help="Teacher type to use when teacher loss is enabled")
     parser.add_argument("--teacher-checkpoint", type=Path, default=None, help="Optional frozen parser teacher checkpoint")
     parser.add_argument("--teacher-target-manifest", type=Path, default=None, help="Optional cached parser-target manifest aligned with the training manifest")
     parser.add_argument("--teacher-loss-weight", type=float, default=0.0, help="Weight for frozen teacher structure loss")
     parser.add_argument("--teacher-max-timestep", type=int, default=None, help="Only apply teacher loss when timestep <= this threshold")
+    parser.add_argument("--teacher-palette", type=Path, default=None, help="Palette mapping for inverse17 teacher targets")
+    parser.add_argument("--teacher-syntax-dir", type=Path, default=None, help="Syntax directory for inverse17 teacher")
+    parser.add_argument("--teacher-syntax-weight", type=float, default=0.0, help="Extra syntax weight for inverse17 teacher logits")
     return parser
 
 
@@ -120,18 +124,38 @@ def main(argv: list[str] | None = None) -> int:
     parser_target_dataset = None
     parser_target_index = None
     if args.teacher_checkpoint is not None:
-        from .teacher import FrozenParserTeacher
-        teacher = FrozenParserTeacher(args.teacher_checkpoint, device=device)
         if args.teacher_target_manifest is None:
             raise ValueError("When using --teacher-checkpoint, pass --teacher-target-manifest with cached parser targets.")
-        from knit_decode.parser_t.dataset import SimulationTopologyDataset
-        parser_target_dataset = SimulationTopologyDataset(
-            args.teacher_target_manifest,
-            image_size=teacher.image_size,
-            grid_size=teacher.grid_size,
-            vocabulary=None,
-            top_k_colors=max(1, teacher.num_classes - 1),
-        )
+        if args.teacher_mode == "coarse":
+            from .teacher import FrozenParserTeacher
+            from knit_decode.parser_t.dataset import SimulationTopologyDataset
+
+            teacher = FrozenParserTeacher(args.teacher_checkpoint, device=device)
+            parser_target_dataset = SimulationTopologyDataset(
+                args.teacher_target_manifest,
+                image_size=teacher.image_size,
+                grid_size=teacher.grid_size,
+                vocabulary=None,
+                top_k_colors=max(1, teacher.num_classes - 1),
+            )
+        else:
+            from .inverse_teacher import FrozenInverseTeacher
+            from knit_decode.parser_t_inverse.dataset import ParserInverseDataset
+            from knit_decode.parser_t_inverse.palette import infer_palette_mapping
+
+            if args.teacher_palette is None:
+                inferred_palette = args.output_dir / "teacher_palette_mapping.json"
+                infer_palette_mapping(args.teacher_target_manifest, inferred_palette)
+                palette_path = inferred_palette
+            else:
+                palette_path = args.teacher_palette
+            syntax_dir = args.teacher_syntax_dir or (Path("dataset2") / "syntax")
+            teacher = FrozenInverseTeacher(args.teacher_checkpoint, syntax_dir=syntax_dir, device=device)
+            parser_target_dataset = ParserInverseDataset(
+                args.teacher_target_manifest,
+                palette_path=palette_path,
+                image_size=teacher.image_size,
+            )
         parser_target_index = {sample.sample_id: index for index, sample in enumerate(parser_target_dataset.samples)}
 
     model = CategoryConditionalUNet(num_categories=len(train_dataset.category_to_id))
@@ -196,8 +220,10 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     predicted_clean = predicted_clean / getattr(torch, "sqrt")(diffusion.alpha_bars.to(device)[selected_timesteps]).view(-1, 1, 1, 1)
                     predicted_clean = predicted_clean.clamp(-1.0, 1.0)
-                    teacher_logits = teacher(predicted_clean)
+                    teacher_logits = teacher.logits(predicted_clean) if hasattr(teacher, "logits") else teacher(predicted_clean)
                     teacher_loss = functional.cross_entropy(teacher_logits, target_grid)
+                    if args.teacher_mode == "inverse17" and args.teacher_syntax_weight > 0.0:
+                        teacher_loss = teacher_loss + args.teacher_syntax_weight * teacher.syntax_loss(teacher_logits)
                 loss = denoise_loss + args.teacher_loss_weight * teacher_loss
 
             optimizer.zero_grad()
@@ -277,8 +303,12 @@ def main(argv: list[str] | None = None) -> int:
         "category_to_id": train_dataset.category_to_id,
         "teacher_checkpoint": str(args.teacher_checkpoint) if args.teacher_checkpoint is not None else None,
         "teacher_target_manifest": str(args.teacher_target_manifest) if args.teacher_target_manifest is not None else None,
+        "teacher_mode": args.teacher_mode,
         "teacher_loss_weight": args.teacher_loss_weight,
         "teacher_max_timestep": args.teacher_max_timestep,
+        "teacher_palette": str(args.teacher_palette) if args.teacher_palette is not None else None,
+        "teacher_syntax_dir": str(args.teacher_syntax_dir) if args.teacher_syntax_dir is not None else None,
+        "teacher_syntax_weight": args.teacher_syntax_weight,
         "history": history,
     }
     (args.output_dir / "metrics.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
