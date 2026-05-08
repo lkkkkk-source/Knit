@@ -1,0 +1,4 @@
+This folder is intentionally separate from parser_t_inverse and refiner_inverse_v1.
+It is meant to approximate the original inverse repo's residual-space joint logic in PyTorch:
+real -> residual regularized image -> residual-space img2prog
+without mutating existing experiment folders or checkpoints.
