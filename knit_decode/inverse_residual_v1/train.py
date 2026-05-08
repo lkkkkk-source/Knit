@@ -11,6 +11,7 @@ from knit_decode.parser_t_inverse.model import InverseImg2Prog
 from .dataset import build_dataloader
 from .losses import cross_entropy_loss, gan_hinge_discriminator_loss, gan_hinge_generator_loss, l1_loss
 from .model import ResidualConditionalPatchDiscriminator, ResidualRefiner
+from .perceptual import VGGFeatureExtractor, gram_matrix
 
 
 def _require_torch() -> tuple[object, object, object]:
@@ -52,6 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--syntax-weight", type=float, default=0.05)
     parser.add_argument("--transfer-weight", type=float, default=50.0)
     parser.add_argument("--syntax-dir", type=Path, default=Path("dataset2/syntax"))
+    parser.add_argument("--use-vgg", action="store_true")
+    parser.add_argument("--vgg-variant", type=str, default="16", choices=("16", "19"))
+    parser.add_argument("--perceptual-weight", type=float, default=0.02 / (128.0 * 128.0))
+    parser.add_argument("--style-weight", type=float, default=0.2)
     parser.add_argument("--num-vis", type=int, default=8)
     return parser
 
@@ -155,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     parser_head.to(device)
     discriminator.to(device)
     syntax_penalties = build_syntax_penalties(args.syntax_dir, 17)
+    vgg = VGGFeatureExtractor(variant=args.vgg_variant, device=device) if args.use_vgg else None
 
     optimizer_g = getattr(optim, "Adam")(list(refiner.parameters()) + list(parser_head.parameters()), lr=args.learning_rate, betas=(0.5, 0.999))
     optimizer_d = getattr(optim, "Adam")(discriminator.parameters(), lr=args.learning_rate * 0.5, betas=(0.5, 0.999))
@@ -174,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         total_parser = 0.0
         total_syntax = 0.0
         total_transfer = 0.0
+        total_perc = 0.0
+        total_style = 0.0
         batch_count = 0
 
         for batch in train_loader:
@@ -210,12 +218,26 @@ def main(argv: list[str] | None = None) -> int:
                     transfer_mask = batch["transfer_mask"].to(device)
                     if bool(getattr(transfer_mask, "any")().item()):
                         transfer_loss = l1_loss(fake_res[transfer_mask], batch["transfer_residual"].to(device)[transfer_mask])
+                perceptual_loss = getattr(torch, "tensor")(0.0, device=device)
+                style_loss = getattr(torch, "tensor")(0.0, device=device)
+                if vgg is not None:
+                    fake_img = (fake_res + args.mean_value).clamp(0.0, 1.0)
+                    target_img = (target_res + args.mean_value).clamp(0.0, 1.0)
+                    fake_feats = vgg(fake_img, ["pool3", "conv1_2", "conv2_2", "conv3_3"])
+                    target_feats = vgg(target_img, ["pool3", "conv1_2", "conv2_2", "conv3_3"])
+                    perceptual_loss = functional.mse_loss(fake_feats["pool3"] / 128.0, target_feats["pool3"] / 128.0)
+                    style_terms = []
+                    for layer_name, layer_weight in [("conv1_2", 0.3), ("conv2_2", 0.5), ("conv3_3", 1.0)]:
+                        style_terms.append(layer_weight * functional.l1_loss(gram_matrix(fake_feats[layer_name] / 128.0), gram_matrix(target_feats[layer_name] / 128.0)))
+                    style_loss = sum(style_terms) / max(1, len(style_terms))
                 loss_g = (
                     args.recon_weight * recon_loss
                     + args.parser_weight * parser_loss
                     + args.adv_weight * adv_loss
                     + args.syntax_weight * syn_loss
                     + args.transfer_weight * transfer_loss
+                    + args.perceptual_weight * perceptual_loss
+                    + args.style_weight * style_loss
                 )
             if use_amp:
                 scaler_g.scale(loss_g).backward()
@@ -231,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
             total_parser += float(parser_loss.item())
             total_syntax += float(syn_loss.item()) if hasattr(syn_loss, "item") else 0.0
             total_transfer += float(transfer_loss.item()) if hasattr(transfer_loss, "item") else 0.0
+            total_perc += float(perceptual_loss.item()) if hasattr(perceptual_loss, "item") else 0.0
+            total_style += float(style_loss.item()) if hasattr(style_loss, "item") else 0.0
             batch_count += 1
             _print_progress(
                 "train",
@@ -248,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
             "train_parser_loss": total_parser / max(1, batch_count),
             "train_syntax_loss": total_syntax / max(1, batch_count),
             "train_transfer_loss": total_transfer / max(1, batch_count),
+            "train_perceptual_loss": total_perc / max(1, batch_count),
+            "train_style_loss": total_style / max(1, batch_count),
         }
 
         if val_loader is not None:
@@ -330,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
         "adv_weight": args.adv_weight,
         "syntax_weight": args.syntax_weight,
         "transfer_weight": args.transfer_weight,
+        "use_vgg": bool(args.use_vgg),
+        "vgg_variant": args.vgg_variant,
+        "perceptual_weight": args.perceptual_weight,
+        "style_weight": args.style_weight,
         "num_train_samples": len(train_dataset),
         "history": history,
     }
