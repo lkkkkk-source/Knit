@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import cast
+
+from PIL import Image
+
+from .dataset import build_dataloader
+from .model import RefinerTransformer
+
+
+def _require_torch() -> object:
+    import importlib
+
+    try:
+        return importlib.import_module("torch")
+    except ImportError as error:
+        raise ImportError("PyTorch is required for refiner_inverse_v1 evaluation. Install with `pip install -e .[train]`.") from error
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Evaluate an inverse-style refiner checkpoint.")
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--pin-memory", action="store_true")
+    parser.add_argument("--persistent-workers", action="store_true")
+    parser.add_argument("--num-vis", type=int, default=16)
+    return parser
+
+
+def _resolve_device(torch: object, device_name: str) -> object:
+    device_cls = getattr(torch, "device")
+    if device_name == "cpu":
+        return device_cls("cpu")
+    if not getattr(torch, "cuda").is_available():
+        raise RuntimeError(f"Requested device {device_name!r}, but CUDA is not available.")
+    return device_cls(device_name)
+
+
+def _to_gray(images: object) -> object:
+    return images.mean(dim=1, keepdim=True)
+
+
+def _save_gray_tensor(tensor: object, output_path: Path) -> None:
+    torch = _require_torch()
+    image = tensor.detach().cpu().clamp(-0.5, 0.5)
+    image = ((image + 0.5) * 255.0).round().to(dtype=getattr(torch, "uint8"))
+    height = int(image.shape[-2])
+    width = int(image.shape[-1])
+    flat = image.reshape(-1).tolist()
+    output = Image.new("L", (width, height))
+    output.putdata(flat)
+    output.save(output_path)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    torch = _require_torch()
+    checkpoint = cast(dict[str, object], getattr(torch, "load")(args.checkpoint.resolve(), map_location="cpu"))
+    checkpoint_metrics = cast(dict[str, object], checkpoint.get("metrics", {}))
+    image_size = tuple(int(value) for value in checkpoint_metrics.get("image_size", [160, 160]))
+    device = _resolve_device(torch, args.device)
+
+    dataloader, _ = build_dataloader(
+        args.manifest,
+        batch_size=args.batch_size,
+        shuffle=False,
+        image_size=cast(tuple[int, int], image_size),
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+        persistent_workers=args.persistent_workers,
+    )
+
+    generator = RefinerTransformer()
+    state_dict = checkpoint.get("generator_state_dict", checkpoint.get("model_state_dict"))
+    if state_dict is None:
+        raise ValueError("Checkpoint does not contain generator_state_dict or model_state_dict")
+    generator.load_state_dict(cast(dict[str, object], state_dict))
+    generator.to(device)
+    generator.eval()
+
+    total_l1 = 0.0
+    vis_written = 0
+    with getattr(torch, "no_grad")():
+        for batch_index, batch in enumerate(dataloader, start=1):
+            sources_rgb = batch["sources"].to(device)
+            targets_rgb = batch["targets"].to(device)
+            source_gray = _to_gray(sources_rgb)
+            target_gray = _to_gray(targets_rgb)
+            pred_gray = generator(source_gray)
+            total_l1 += float((pred_gray - target_gray).abs().mean().item())
+            if vis_written < args.num_vis:
+                count = min(args.num_vis - vis_written, pred_gray.shape[0])
+                for sample_index in range(count):
+                    sample_id = str(batch["sample_ids"][sample_index]).replace("/", "__")
+                    sample_dir = args.output_dir / "samples" / sample_id
+                    sample_dir.mkdir(parents=True, exist_ok=True)
+                    _save_gray_tensor(source_gray[sample_index], sample_dir / "input.png")
+                    _save_gray_tensor(pred_gray[sample_index], sample_dir / "pred.png")
+                    _save_gray_tensor(target_gray[sample_index], sample_dir / "target.png")
+                    vis_written += 1
+
+    result = {
+        "manifest": str(args.manifest.resolve()),
+        "checkpoint": str(args.checkpoint.resolve()),
+        "output_dir": str(args.output_dir.resolve()),
+        "device": str(device),
+        "image_size": list(image_size),
+        "avg_l1": total_l1 / max(1, len(dataloader)),
+    }
+    (args.output_dir / "metrics.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
