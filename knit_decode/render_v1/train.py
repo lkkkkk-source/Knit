@@ -182,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         total_loss = 0.0
         total_denoise_loss = 0.0
         total_teacher_loss = 0.0
+        total_teacher_ce = 0.0
+        total_teacher_syntax = 0.0
         batch_count = 0
         total_batches = len(train_loader)
         for batch in train_loader:
@@ -196,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
                 pred_noise = model(noisy_images, timesteps, category_ids)
                 denoise_loss = functional.mse_loss(pred_noise, noise)
                 teacher_loss = getattr(torch, "tensor")(0.0, device=device)
+                teacher_ce = getattr(torch, "tensor")(0.0, device=device)
+                teacher_syntax = getattr(torch, "tensor")(0.0, device=device)
                 use_teacher = (
                     teacher is not None
                     and parser_target_dataset is not None
@@ -232,9 +236,11 @@ def main(argv: list[str] | None = None) -> int:
                     predicted_clean = predicted_clean / getattr(torch, "sqrt")(diffusion.alpha_bars.to(device)[selected_timesteps]).view(-1, 1, 1, 1)
                     predicted_clean = predicted_clean.clamp(-1.0, 1.0)
                     teacher_logits = teacher.logits(predicted_clean) if hasattr(teacher, "logits") else teacher(predicted_clean)
-                    teacher_loss = functional.cross_entropy(teacher_logits, target_grid)
+                    teacher_ce = functional.cross_entropy(teacher_logits, target_grid)
+                    teacher_loss = teacher_ce
                     if args.teacher_mode == "inverse17" and args.teacher_syntax_weight > 0.0:
-                        teacher_loss = teacher_loss + args.teacher_syntax_weight * teacher.syntax_loss(teacher_logits)
+                        teacher_syntax = teacher.syntax(teacher_logits)
+                        teacher_loss = teacher_loss + args.teacher_syntax_weight * teacher_syntax
                 loss = denoise_loss + args.teacher_loss_weight * teacher_loss
 
             optimizer.zero_grad()
@@ -249,12 +255,20 @@ def main(argv: list[str] | None = None) -> int:
             total_loss += float(loss.item())
             total_denoise_loss += float(denoise_loss.item())
             total_teacher_loss += float(teacher_loss.item()) if hasattr(teacher_loss, "item") else 0.0
+            total_teacher_ce += float(teacher_ce.item()) if hasattr(teacher_ce, "item") else 0.0
+            total_teacher_syntax += float(teacher_syntax.item()) if hasattr(teacher_syntax, "item") else 0.0
             batch_count += 1
             _print_progress(
                 "train",
                 batch_count,
                 total_batches,
-                f"loss={total_loss / batch_count:.6f} denoise={total_denoise_loss / batch_count:.6f} teacher={total_teacher_loss / batch_count:.6f}",
+                (
+                    f"loss={total_loss / batch_count:.6f} "
+                    f"denoise={total_denoise_loss / batch_count:.6f} "
+                    f"teacher={total_teacher_loss / batch_count:.6f} "
+                    f"teacher_ce={total_teacher_ce / batch_count:.6f} "
+                    f"teacher_syntax={total_teacher_syntax / batch_count:.6f}"
+                ),
             )
         _finish_progress()
 
@@ -263,6 +277,8 @@ def main(argv: list[str] | None = None) -> int:
             "train_loss": total_loss / max(1, batch_count),
             "train_denoise_loss": total_denoise_loss / max(1, batch_count),
             "train_teacher_loss": total_teacher_loss / max(1, batch_count),
+            "train_teacher_ce": total_teacher_ce / max(1, batch_count),
+            "train_teacher_syntax": total_teacher_syntax / max(1, batch_count),
         }
 
         if val_loader is not None:
@@ -288,13 +304,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"epoch={epoch + 1} train_loss={cast(float, epoch_metrics['train_loss']):.6f} "
                 f"train_denoise={cast(float, epoch_metrics['train_denoise_loss']):.6f} "
                 f"train_teacher={cast(float, epoch_metrics['train_teacher_loss']):.6f} "
+                f"train_teacher_ce={cast(float, epoch_metrics['train_teacher_ce']):.6f} "
+                f"train_teacher_syntax={cast(float, epoch_metrics['train_teacher_syntax']):.6f} "
                 f"val_loss={cast(float, epoch_metrics['val_loss']):.6f}"
             )
         else:
             print(
                 f"epoch={epoch + 1} train_loss={cast(float, epoch_metrics['train_loss']):.6f} "
                 f"train_denoise={cast(float, epoch_metrics['train_denoise_loss']):.6f} "
-                f"train_teacher={cast(float, epoch_metrics['train_teacher_loss']):.6f}"
+                f"train_teacher={cast(float, epoch_metrics['train_teacher_loss']):.6f} "
+                f"train_teacher_ce={cast(float, epoch_metrics['train_teacher_ce']):.6f} "
+                f"train_teacher_syntax={cast(float, epoch_metrics['train_teacher_syntax']):.6f}"
             )
 
         history.append(epoch_metrics)
