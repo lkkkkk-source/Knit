@@ -1,0 +1,8 @@
+This line is intentionally separate from inverse_residual_v1.
+Goal: organize a PyTorch version that follows the original repo's training graph and losses more closely:
+- real -> transformer_r2s -> regularized residual image
+- regularized residual image -> img2prog
+- paired synthetic rend branch
+- transfer branch
+- adversarial, VGG, CE/MIL, syntax
+without mutating existing experiment folders.
