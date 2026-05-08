@@ -45,6 +45,10 @@ def infer_palette_mapping(manifest_path: str | Path, output_path: str | Path | N
     manifest_path = Path(manifest_path)
     rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     root = manifest_path.parent
+    if rows:
+        probe = root / rows[0]["target_path"]
+        if not probe.exists():
+            root = manifest_path.parent.parent
     color_set: set[RGB] = set()
 
     for row in rows:
