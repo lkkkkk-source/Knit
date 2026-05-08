@@ -82,6 +82,17 @@ def _build_category_mapping(train_manifest: Path, val_manifest: Path | None) -> 
     return {category: index for index, category in enumerate(sorted(categories))}
 
 
+def _sample_id_from_entry(sample: object) -> str:
+    if isinstance(sample, dict):
+        value = sample.get("sample_id")
+        if isinstance(value, str):
+            return value
+    value = getattr(sample, "sample_id", None)
+    if isinstance(value, str):
+        return value
+    raise ValueError(f"Unable to read sample_id from sample entry: {sample!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -156,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                 palette_path=palette_path,
                 image_size=teacher.image_size,
             )
-        parser_target_index = {sample.sample_id: index for index, sample in enumerate(parser_target_dataset.samples)}
+        parser_target_index = {_sample_id_from_entry(sample): index for index, sample in enumerate(parser_target_dataset.samples)}
 
     model = CategoryConditionalUNet(num_categories=len(train_dataset.category_to_id))
     model.to(device)
