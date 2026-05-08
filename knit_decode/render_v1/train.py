@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--teacher-checkpoint", type=Path, default=None, help="Optional frozen parser teacher checkpoint")
     parser.add_argument("--teacher-target-manifest", type=Path, default=None, help="Optional cached parser-target manifest aligned with the training manifest")
     parser.add_argument("--teacher-loss-weight", type=float, default=0.0, help="Weight for frozen teacher structure loss")
+    parser.add_argument("--teacher-max-timestep", type=int, default=None, help="Only apply teacher loss when timestep <= this threshold")
     return parser
 
 
@@ -160,17 +161,40 @@ def main(argv: list[str] | None = None) -> int:
                 pred_noise = model(noisy_images, timesteps, category_ids)
                 denoise_loss = functional.mse_loss(pred_noise, noise)
                 teacher_loss = getattr(torch, "tensor")(0.0, device=device)
-                if teacher is not None and parser_target_dataset is not None and parser_target_index is not None and args.teacher_loss_weight > 0.0:
+                use_teacher = (
+                    teacher is not None
+                    and parser_target_dataset is not None
+                    and parser_target_index is not None
+                    and args.teacher_loss_weight > 0.0
+                )
+                if use_teacher and args.teacher_max_timestep is not None:
+                    teacher_mask = timesteps <= int(args.teacher_max_timestep)
+                    use_teacher = bool(getattr(teacher_mask, "any")().item())
+                else:
+                    teacher_mask = None
+                if use_teacher:
                     target_tensors = []
-                    for sample_id in sample_ids:
+                    selected_ids = sample_ids
+                    selected_noisy = noisy_images
+                    selected_pred_noise = pred_noise
+                    selected_timesteps = timesteps
+                    if teacher_mask is not None:
+                        selected_ids = [sample_id for sample_id, keep in zip(sample_ids, teacher_mask.tolist()) if keep]
+                        selected_noisy = noisy_images[teacher_mask]
+                        selected_pred_noise = pred_noise[teacher_mask]
+                        selected_timesteps = timesteps[teacher_mask]
+                    for sample_id in selected_ids:
                         target_index = parser_target_index.get(sample_id)
                         if target_index is None:
                             raise KeyError(f"Missing parser target for sample_id={sample_id!r} in {args.teacher_target_manifest}")
                         parser_item = parser_target_dataset[target_index]
                         target_tensors.append(parser_item["target"])
                     target_grid = getattr(torch, "stack")(target_tensors).to(device)
-                    predicted_clean = (noisy_images - getattr(torch, "sqrt")(1.0 - diffusion.alpha_bars.to(device)[timesteps]).view(-1, 1, 1, 1) * pred_noise)
-                    predicted_clean = predicted_clean / getattr(torch, "sqrt")(diffusion.alpha_bars.to(device)[timesteps]).view(-1, 1, 1, 1)
+                    predicted_clean = (
+                        selected_noisy
+                        - getattr(torch, "sqrt")(1.0 - diffusion.alpha_bars.to(device)[selected_timesteps]).view(-1, 1, 1, 1) * selected_pred_noise
+                    )
+                    predicted_clean = predicted_clean / getattr(torch, "sqrt")(diffusion.alpha_bars.to(device)[selected_timesteps]).view(-1, 1, 1, 1)
                     predicted_clean = predicted_clean.clamp(-1.0, 1.0)
                     teacher_logits = teacher(predicted_clean)
                     teacher_loss = functional.cross_entropy(teacher_logits, target_grid)
@@ -254,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         "teacher_checkpoint": str(args.teacher_checkpoint) if args.teacher_checkpoint is not None else None,
         "teacher_target_manifest": str(args.teacher_target_manifest) if args.teacher_target_manifest is not None else None,
         "teacher_loss_weight": args.teacher_loss_weight,
+        "teacher_max_timestep": args.teacher_max_timestep,
         "history": history,
     }
     (args.output_dir / "metrics.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
