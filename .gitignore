@@ -11,5 +11,5 @@ __pycache__/
 /parser_t/runs/
 /parser_t/debug/
 /parser_t/cache/
-/parser_t/
+/parser_t*/
 /render_v*/
