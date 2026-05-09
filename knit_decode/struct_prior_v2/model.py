@@ -99,11 +99,12 @@ class MultiScaleAutoregressivePrior:
                 return getattr(torch, "cat")([bos, flat[:, :-1]], dim=1)
 
             def _one_hot(self, grid: object, size: int) -> object:
+                torch = _require_torch()[0]
                 functional = __import__("importlib").import_module("torch.nn.functional")
-                one_hot = functional.one_hot(grid, num_classes=self.num_classes).permute(0, 3, 1, 2).to(dtype=grid.dtype)
+                one_hot = functional.one_hot(grid, num_classes=self.num_classes).permute(0, 3, 1, 2).to(dtype=getattr(torch, "float32"))
                 if int(grid.shape[-1]) != size:
                     one_hot = functional.interpolate(one_hot, size=(size, size), mode="nearest")
-                return one_hot.to(dtype=getattr(torch, "float32"))
+                return one_hot
 
             def forward(self, category_ids: object, grid5: object, grid10: object, grid20: object) -> dict[str, object]:
                 category_embed = self.category_embed(category_ids)
