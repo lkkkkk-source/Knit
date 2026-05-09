@@ -77,6 +77,15 @@ def _finish_progress() -> None:
     print(flush=True)
 
 
+def _build_category_mapping(train_manifest: Path, val_manifest: Path | None) -> dict[str, int]:
+    from knit_decode.parser_t_inverse.dataset import load_manifest
+
+    categories = {sample["category"] for sample in load_manifest(train_manifest)}
+    if val_manifest is not None:
+        categories.update(sample["category"] for sample in load_manifest(val_manifest))
+    return {category: index for index, category in enumerate(sorted(categories))}
+
+
 def _compute_metrics(confusion: list[list[int]]) -> dict[str, object]:
     num_classes = len(confusion)
     correct = sum(confusion[index][index] for index in range(num_classes))
@@ -133,12 +142,14 @@ def main(argv: list[str] | None = None) -> int:
         infer_palette_mapping(args.manifest, palette_path)
     syntax_dir = args.syntax_dir or (Path("dataset2") / "syntax")
     syntax_penalties = build_syntax_penalties(syntax_dir, NUM_CLASSES)
+    category_to_id = _build_category_mapping(args.manifest, args.val_manifest)
 
     train_loader, train_dataset = build_dataloader(
         args.manifest,
         palette_path=palette_path,
         batch_size=args.batch_size,
         shuffle=True,
+        category_to_id=category_to_id,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
@@ -150,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             palette_path=palette_path,
             batch_size=args.batch_size,
             shuffle=False,
+            category_to_id=category_to_id,
             num_workers=args.num_workers,
             pin_memory=args.pin_memory,
             persistent_workers=args.persistent_workers,

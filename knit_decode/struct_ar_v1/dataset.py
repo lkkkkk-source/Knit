@@ -39,14 +39,19 @@ def _downsample_grid_nearest(grid: list[list[int]], size: int) -> list[list[int]
 
 
 class StructureSampleDataset:
-    def __init__(self, manifest_path: str | Path, palette_path: str | Path) -> None:
+    def __init__(
+        self,
+        manifest_path: str | Path,
+        palette_path: str | Path,
+        category_to_id: dict[str, int] | None = None,
+    ) -> None:
         self.base = ParserInverseDataset(manifest_path, palette_path=palette_path, image_size=(160, 160))
         self.samples = self.base.samples
         self.root = self.base.root
         self.class_names = list(self.base.class_names)
         self.num_classes = NUM_CLASSES
         categories = sorted({sample["category"] for sample in self.samples})
-        self.category_to_id = {category: index for index, category in enumerate(categories)}
+        self.category_to_id = category_to_id or {category: index for index, category in enumerate(categories)}
 
     def __len__(self) -> int:
         return len(self.base)
@@ -87,12 +92,13 @@ def build_dataloader(
     palette_path: str | Path,
     batch_size: int,
     shuffle: bool,
+    category_to_id: dict[str, int] | None = None,
     num_workers: int = 0,
     pin_memory: bool = False,
     persistent_workers: bool = False,
 ) -> tuple[object, StructureSampleDataset]:
     _, data = _require_torch()
-    dataset = StructureSampleDataset(manifest_path, palette_path=palette_path)
+    dataset = StructureSampleDataset(manifest_path, palette_path=palette_path, category_to_id=category_to_id)
     dataloader_cls = getattr(data, "DataLoader")
     worker_persistent = persistent_workers if num_workers > 0 else False
     return dataloader_cls(
