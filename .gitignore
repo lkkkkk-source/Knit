@@ -20,3 +20,6 @@ __pycache__/
 /struct_prior_v*/
 /struct_maskgit_v*/
 /struct_latentplan_v*/
+# Model checkpoints / generated cache
+*.pt
+knit_decode/struct_latentplan_v1/cache/
