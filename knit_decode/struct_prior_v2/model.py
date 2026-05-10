@@ -24,11 +24,45 @@ class MultiScaleAutoregressivePrior:
     ) -> object:
         torch, nn = _require_torch()
 
+        def _rotate_half(x: object) -> object:
+            even = x[..., ::2]
+            odd = x[..., 1::2]
+            rotated = getattr(torch, "stack")([-odd, even], dim=-1)
+            return rotated.flatten(-2)
+
+        def _apply_1d_rope(x: object, positions: object) -> object:
+            dim = int(x.shape[-1])
+            if dim % 2 != 0:
+                raise ValueError(f"RoPE dimension must be even, got {dim}")
+            half = dim // 2
+            freq = getattr(torch, "arange")(half, device=x.device, dtype=getattr(torch, "float32"))
+            freq = 1.0 / (10000.0 ** (freq / max(1, half)))
+            angles = positions.unsqueeze(-1).to(dtype=getattr(torch, "float32")) * freq
+            cos = getattr(torch, "cos")(angles).repeat_interleave(2, dim=-1)
+            sin = getattr(torch, "sin")(angles).repeat_interleave(2, dim=-1)
+            return x * cos + _rotate_half(x) * sin
+
+        def _apply_2d_rope(x: object, size: int) -> object:
+            dim = int(x.shape[-1])
+            if dim % 4 != 0:
+                raise ValueError(f"2D RoPE requires head dim divisible by 4, got {dim}")
+            half = dim // 2
+            row_part = x[..., :half]
+            col_part = x[..., half:]
+            rows = getattr(torch, "arange")(size, device=x.device).unsqueeze(1).expand(size, size).reshape(-1)
+            cols = getattr(torch, "arange")(size, device=x.device).unsqueeze(0).expand(size, size).reshape(-1)
+            row_part = _apply_1d_rope(row_part, rows)
+            col_part = _apply_1d_rope(col_part, cols)
+            return getattr(torch, "cat")([row_part, col_part], dim=-1)
+
         class _DecoderBlock(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
                 self.norm1 = nn.LayerNorm(width)
-                self.attn = nn.MultiheadAttention(width, heads, batch_first=True)
+                self.q_proj = nn.Linear(width, width)
+                self.k_proj = nn.Linear(width, width)
+                self.v_proj = nn.Linear(width, width)
+                self.out_proj = nn.Linear(width, width)
                 self.norm2 = nn.LayerNorm(width)
                 hidden = int(width * mlp_ratio)
                 self.mlp = nn.Sequential(
@@ -37,9 +71,21 @@ class MultiScaleAutoregressivePrior:
                     nn.Linear(hidden, width),
                 )
 
-            def forward(self, x: object, attn_mask: object) -> object:
+            def forward(self, x: object, attn_mask: object, size: int) -> object:
+                functional = __import__("importlib").import_module("torch.nn.functional")
                 h = self.norm1(x)
-                attn_out, _ = self.attn(h, h, h, attn_mask=attn_mask, need_weights=False)
+                batch_size, seq_len, _ = h.shape
+                head_dim = width // heads
+                q = self.q_proj(h).reshape(batch_size, seq_len, heads, head_dim).permute(0, 2, 1, 3)
+                k = self.k_proj(h).reshape(batch_size, seq_len, heads, head_dim).permute(0, 2, 1, 3)
+                v = self.v_proj(h).reshape(batch_size, seq_len, heads, head_dim).permute(0, 2, 1, 3)
+                q = _apply_2d_rope(q, size)
+                k = _apply_2d_rope(k, size)
+                scores = getattr(torch, "matmul")(q, k.transpose(-1, -2)) / (head_dim ** 0.5)
+                scores = scores + attn_mask.unsqueeze(0).unsqueeze(0)
+                weights = functional.softmax(scores, dim=-1)
+                attn_out = getattr(torch, "matmul")(weights, v).permute(0, 2, 1, 3).reshape(batch_size, seq_len, width)
+                attn_out = self.out_proj(attn_out)
                 x = x + attn_out
                 x = x + self.mlp(self.norm2(x))
                 return x
@@ -51,8 +97,6 @@ class MultiScaleAutoregressivePrior:
                 self.seq_len = size * size
                 self.bos_id = num_classes
                 self.token_embed = nn.Embedding(num_classes + 1, width)
-                self.row_embed = nn.Embedding(size, width)
-                self.col_embed = nn.Embedding(size, width)
                 self.category_proj = nn.Linear(width, width)
                 self.cond_proj = nn.Conv2d(cond_channels, width, kernel_size=1) if cond_channels > 0 else None
                 self.blocks = nn.ModuleList([_DecoderBlock() for _ in range(depth)])
@@ -63,23 +107,15 @@ class MultiScaleAutoregressivePrior:
                 mask = getattr(torch, "full")((self.seq_len, self.seq_len), float("-inf"), device=device)
                 return getattr(torch, "triu")(mask, diagonal=1)
 
-            def _position_embed(self, batch_size: int, device: object) -> object:
-                rows = getattr(torch, "arange")(self.size, device=device)
-                cols = getattr(torch, "arange")(self.size, device=device)
-                pos = self.row_embed(rows).unsqueeze(1) + self.col_embed(cols).unsqueeze(0)
-                pos = pos.reshape(1, self.seq_len, -1)
-                return pos.expand(batch_size, -1, -1)
-
             def forward(self, tokens: object, category_embed: object, cond_map: object | None) -> object:
-                batch_size = int(tokens.shape[0])
                 x = self.token_embed(tokens)
-                x = x + self._position_embed(batch_size, tokens.device) + self.category_proj(category_embed).unsqueeze(1)
+                x = x + self.category_proj(category_embed).unsqueeze(1)
                 if cond_map is not None and self.cond_proj is not None:
                     cond_feat = self.cond_proj(cond_map).flatten(2).transpose(1, 2)
                     x = x + cond_feat
                 mask = self._causal_mask(tokens.device)
                 for block in self.blocks:
-                    x = block(x, mask)
+                    x = block(x, mask, self.size)
                 return self.head(self.norm(x))
 
         class _Model(nn.Module):
