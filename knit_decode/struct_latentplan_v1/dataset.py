@@ -56,6 +56,12 @@ class LatentPlanDataset:
         cache_payload = _require_torch()[0].load(Path(plan_cache_path), map_location="cpu")
         self.cache_payload = cache_payload
         self.cache_meta = cache_payload["meta"]
+        self.category_fg_stats = cache_payload.get("category_fg_stats")
+        self.category_occ_stats = cache_payload.get("category_occ_stats")
+        if not isinstance(self.category_fg_stats, dict) or not self.category_fg_stats:
+            raise ValueError(f"category_fg_stats missing or empty in plan cache: {plan_cache_path}")
+        if not isinstance(self.category_occ_stats, dict) or not self.category_occ_stats:
+            raise ValueError(f"category_occ_stats missing or empty in plan cache: {plan_cache_path}")
         self.cache_by_id = {entry["sample_id"]: entry for entry in cache_payload["items"]}
         categories = sorted({sample["category"] for sample in self.samples})
         self.category_to_id = category_to_id or {category: index for index, category in enumerate(categories)}
@@ -124,6 +130,26 @@ class LatentPlanDataset:
         y20 = cached.get("y20")
         if not isinstance(y20, list):
             raise ValueError(f"Invalid y20 in cache for sample_id={sample_id!r}")
+        fg_stats = self.category_fg_stats.get(category)
+        occ_stats = self.category_occ_stats.get(category)
+        if not isinstance(fg_stats, dict):
+            raise ValueError(f"Missing category_fg_stats for category={category!r} in cache {self.cache_meta.get('manifest')}")
+        if not isinstance(occ_stats, dict):
+            raise ValueError(f"Missing category_occ_stats for category={category!r} in cache {self.cache_meta.get('manifest')}")
+        required_fg = ["count", "mean", "std", "q01", "q05", "q10", "q50", "q90", "q95", "q99", "valid_low", "valid_high"]
+        required_occ = ["valid_o5_min_cells", "valid_o5_max_cells", "valid_o10_min_cells", "valid_o10_max_cells"]
+        missing_fg = [key for key in required_fg if key not in fg_stats]
+        missing_occ = [key for key in required_occ if key not in occ_stats]
+        if missing_fg:
+            raise ValueError(f"Missing fg stats keys for category={category!r}: {missing_fg}")
+        if missing_occ:
+            raise ValueError(f"Missing occ stats keys for category={category!r}: {missing_occ}")
+        fg_valid_low = float(fg_stats["valid_low"])
+        fg_valid_high = float(fg_stats["valid_high"])
+        o5_valid_low_ratio = float(occ_stats["valid_o5_min_cells"]) / 25.0
+        o5_valid_high_ratio = float(occ_stats["valid_o5_max_cells"]) / 25.0
+        o10_valid_low_ratio = float(occ_stats["valid_o10_min_cells"]) / 100.0
+        o10_valid_high_ratio = float(occ_stats["valid_o10_max_cells"]) / 100.0
         return {
             "sample_id": sample_id,
             "category": category,
@@ -146,6 +172,12 @@ class LatentPlanDataset:
             "col_projection": getattr(torch, "tensor")(cached["col_projection"], dtype=getattr(torch, "float32")),
             "grammar_signature": getattr(torch, "tensor")(cached["grammar_signature"], dtype=getattr(torch, "float32")),
             "adjacency_signature": getattr(torch, "tensor")(cached["adjacency_signature"], dtype=getattr(torch, "float32")),
+            "fg_valid_low": getattr(torch, "tensor")(fg_valid_low, dtype=getattr(torch, "float32")),
+            "fg_valid_high": getattr(torch, "tensor")(fg_valid_high, dtype=getattr(torch, "float32")),
+            "o5_valid_low_ratio": getattr(torch, "tensor")(o5_valid_low_ratio, dtype=getattr(torch, "float32")),
+            "o5_valid_high_ratio": getattr(torch, "tensor")(o5_valid_high_ratio, dtype=getattr(torch, "float32")),
+            "o10_valid_low_ratio": getattr(torch, "tensor")(o10_valid_low_ratio, dtype=getattr(torch, "float32")),
+            "o10_valid_high_ratio": getattr(torch, "tensor")(o10_valid_high_ratio, dtype=getattr(torch, "float32")),
             "metadata": cached,
         }
 
@@ -171,6 +203,12 @@ def collate_batch(batch: list[dict[str, object]]) -> dict[str, object]:
         "col_projection": getattr(torch, "stack")([sample["col_projection"] for sample in batch]),
         "grammar_signature": getattr(torch, "stack")([sample["grammar_signature"] for sample in batch]),
         "adjacency_signature": getattr(torch, "stack")([sample["adjacency_signature"] for sample in batch]),
+        "fg_valid_low": getattr(torch, "stack")([sample["fg_valid_low"] for sample in batch]),
+        "fg_valid_high": getattr(torch, "stack")([sample["fg_valid_high"] for sample in batch]),
+        "o5_valid_low_ratio": getattr(torch, "stack")([sample["o5_valid_low_ratio"] for sample in batch]),
+        "o5_valid_high_ratio": getattr(torch, "stack")([sample["o5_valid_high_ratio"] for sample in batch]),
+        "o10_valid_low_ratio": getattr(torch, "stack")([sample["o10_valid_low_ratio"] for sample in batch]),
+        "o10_valid_high_ratio": getattr(torch, "stack")([sample["o10_valid_high_ratio"] for sample in batch]),
         "metadata": [sample["metadata"] for sample in batch],
     }
 

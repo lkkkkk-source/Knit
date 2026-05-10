@@ -125,75 +125,62 @@ def _planner_losses_v11(
     }
 
 
-def _category_barrier(category_names: list[str], fg_ratio_prob: object, o5_logits: object, o10_logits: object, category_fg_stats: dict[str, dict[str, float]], category_occ_stats: dict[str, dict[str, float]]) -> tuple[object, object, dict[str, float]]:
+def _category_barrier(
+    fg_ratio_raw: object,
+    o5_logits: object,
+    o10_logits: object,
+    fg_valid_low: object,
+    fg_valid_high: object,
+    o5_valid_low_ratio: object,
+    o5_valid_high_ratio: object,
+    o10_valid_low_ratio: object,
+    o10_valid_high_ratio: object,
+) -> tuple[object, object, dict[str, float]]:
     torch, _ = _require_torch()
     functional = __import__("importlib").import_module("torch.nn.functional")
+    fg_ratio_prob = fg_ratio_raw
     mean_o5 = getattr(torch, "sigmoid")(o5_logits).mean(dim=(1, 2, 3))
     mean_o10 = getattr(torch, "sigmoid")(o10_logits).mean(dim=(1, 2, 3))
-    fg_barrier_terms = []
-    occ_barrier_terms = []
-    all_bg = 0
-    all_fg = 0
-    valid_fg = 0
-    fg_values: list[float] = []
-    valid_low_values: list[float] = []
-    valid_high_values: list[float] = []
-    o5_low_values: list[float] = []
-    o5_high_values: list[float] = []
-    o10_low_values: list[float] = []
-    o10_high_values: list[float] = []
-    for index, category in enumerate(category_names):
-        fg_stats = category_fg_stats.get(category, None)
-        occ_stats = category_occ_stats.get(category, None)
-        if fg_stats is None or occ_stats is None:
-            fg_barrier_terms.append(fg_ratio_prob[index] * 0.0)
-            occ_barrier_terms.append(mean_o5[index] * 0.0)
-            continue
-        valid_low = float(fg_stats["valid_low"])
-        valid_high = float(fg_stats["valid_high"])
-        fg_value = fg_ratio_prob[index]
-        fg_values.append(float(fg_value.item()))
-        valid_low_values.append(valid_low)
-        valid_high_values.append(valid_high)
-        fg_barrier_terms.append(functional.softplus(valid_low - fg_value) + functional.softplus(fg_value - valid_high))
-        low_o5 = float(occ_stats["valid_o5_min_cells"]) / 25.0
-        high_o5 = float(occ_stats["valid_o5_max_cells"]) / 25.0
-        low_o10 = float(occ_stats["valid_o10_min_cells"]) / 100.0
-        high_o10 = float(occ_stats["valid_o10_max_cells"]) / 100.0
-        o5_low_values.append(low_o5)
-        o5_high_values.append(high_o5)
-        o10_low_values.append(low_o10)
-        o10_high_values.append(high_o10)
-        occ_barrier_terms.append(
-            functional.softplus(low_o5 - mean_o5[index])
-            + functional.softplus(mean_o5[index] - high_o5)
-            + functional.softplus(low_o10 - mean_o10[index])
-            + functional.softplus(mean_o10[index] - high_o10)
-        )
-        fg_scalar = float(fg_value.item())
-        if fg_scalar <= 0.02:
-            all_bg += 1
-        if fg_scalar >= 0.98:
-            all_fg += 1
-        if valid_low <= fg_scalar <= valid_high:
-            valid_fg += 1
-    fg_barrier = getattr(torch, "stack")(fg_barrier_terms).mean() if fg_barrier_terms else getattr(torch, "tensor")(0.0, device=fg_ratio_prob.device)
-    occ_barrier = getattr(torch, "stack")(occ_barrier_terms).mean() if occ_barrier_terms else getattr(torch, "tensor")(0.0, device=fg_ratio_prob.device)
+    for name, tensor in {
+        "fg_valid_low": fg_valid_low,
+        "fg_valid_high": fg_valid_high,
+        "o5_valid_low_ratio": o5_valid_low_ratio,
+        "o5_valid_high_ratio": o5_valid_high_ratio,
+        "o10_valid_low_ratio": o10_valid_low_ratio,
+        "o10_valid_high_ratio": o10_valid_high_ratio,
+    }.items():
+        if tensor is None:
+            raise ValueError(f"{name} is missing from batch diagnostics")
+    if bool((fg_valid_low < 0).any().item()) or bool((fg_valid_high <= 0).all().item()):
+        raise ValueError("Invalid fg validity bounds in batch")
+    fg_barrier = (
+        functional.softplus(fg_valid_low - fg_ratio_prob)
+        + functional.softplus(fg_ratio_prob - fg_valid_high)
+    ).mean()
+    occ_barrier = (
+        functional.softplus(o5_valid_low_ratio - mean_o5)
+        + functional.softplus(mean_o5 - o5_valid_high_ratio)
+        + functional.softplus(o10_valid_low_ratio - mean_o10)
+        + functional.softplus(mean_o10 - o10_valid_high_ratio)
+    ).mean()
+    all_bg_mask = fg_ratio_prob <= 0.02
+    all_fg_mask = fg_ratio_prob >= 0.98
+    valid_mask = (fg_ratio_prob >= fg_valid_low) & (fg_ratio_prob <= fg_valid_high)
     rates = {
-        "pred_all_background_rate": all_bg / float(max(1, len(category_names))),
-        "pred_all_foreground_rate": all_fg / float(max(1, len(category_names))),
-        "pred_valid_fg_rate": valid_fg / float(max(1, len(category_names))),
-        "pred_fg_ratio_mean": sum(fg_values) / float(max(1, len(fg_values))) if fg_values else 0.0,
-        "pred_fg_ratio_min": min(fg_values) if fg_values else 0.0,
-        "pred_fg_ratio_max": max(fg_values) if fg_values else 0.0,
-        "valid_low_mean": sum(valid_low_values) / float(max(1, len(valid_low_values))) if valid_low_values else 0.0,
-        "valid_high_mean": sum(valid_high_values) / float(max(1, len(valid_high_values))) if valid_high_values else 0.0,
+        "pred_all_background_rate": float(all_bg_mask.to(dtype=getattr(torch, "float32")).mean().item()),
+        "pred_all_foreground_rate": float(all_fg_mask.to(dtype=getattr(torch, "float32")).mean().item()),
+        "pred_valid_fg_rate": float(valid_mask.to(dtype=getattr(torch, "float32")).mean().item()),
+        "pred_fg_ratio_mean": float(fg_ratio_prob.mean().item()),
+        "pred_fg_ratio_min": float(fg_ratio_prob.min().item()),
+        "pred_fg_ratio_max": float(fg_ratio_prob.max().item()),
+        "valid_low_mean": float(fg_valid_low.mean().item()),
+        "valid_high_mean": float(fg_valid_high.mean().item()),
         "mean_o5_occ": float(mean_o5.mean().item()),
         "mean_o10_occ": float(mean_o10.mean().item()),
-        "o5_low_mean": sum(o5_low_values) / float(max(1, len(o5_low_values))) if o5_low_values else 0.0,
-        "o5_high_mean": sum(o5_high_values) / float(max(1, len(o5_high_values))) if o5_high_values else 0.0,
-        "o10_low_mean": sum(o10_low_values) / float(max(1, len(o10_low_values))) if o10_low_values else 0.0,
-        "o10_high_mean": sum(o10_high_values) / float(max(1, len(o10_high_values))) if o10_high_values else 0.0,
+        "o5_low_mean": float(o5_valid_low_ratio.mean().item()),
+        "o5_high_mean": float(o5_valid_high_ratio.mean().item()),
+        "o10_low_mean": float(o10_valid_low_ratio.mean().item()),
+        "o10_high_mean": float(o10_valid_high_ratio.mean().item()),
     }
     return fg_barrier, occ_barrier, rates
 
@@ -329,8 +316,8 @@ def main(argv: list[str] | None = None) -> int:
     z_category_history: dict[str, dict[str, object]] = {}
     best_metric_name = "val_seen_loss"
     best_metric_value = float("inf")
-    category_fg_stats = train_dataset.cache_meta.get("category_fg_stats", {})
-    category_occ_stats = train_dataset.cache_meta.get("category_occ_stats", {})
+    category_fg_stats = train_dataset.cache_payload.get("category_fg_stats", {})
+    category_occ_stats = train_dataset.cache_payload.get("category_occ_stats", {})
     print(format_metric_line("categories:", [("num_categories", len(category_to_id)), ("train_categories", len(train_categories)), ("val_categories", len(val_categories)), ("unseen_val_categories", unseen_val_categories)]))
     for epoch in range(int(train_cf["epochs"])):
         print(f"\nepoch {epoch + 1}/{int(train_cf['epochs'])}")
@@ -377,6 +364,12 @@ def main(argv: list[str] | None = None) -> int:
             col_projection = batch["col_projection"].to(device)
             grammar_signature = batch["grammar_signature"].to(device)
             adjacency_signature = batch["adjacency_signature"].to(device)
+            fg_valid_low = batch["fg_valid_low"].to(device)
+            fg_valid_high = batch["fg_valid_high"].to(device)
+            o5_valid_low_ratio = batch["o5_valid_low_ratio"].to(device)
+            o5_valid_high_ratio = batch["o5_valid_high_ratio"].to(device)
+            o10_valid_low_ratio = batch["o10_valid_low_ratio"].to(device)
+            o10_valid_high_ratio = batch["o10_valid_high_ratio"].to(device)
             outputs = model(category_ids, z_ids=z, mode_mask=mode_mask, sample_mode="teacher")
             losses = _planner_losses_v11(functional, outputs, z, mode_mask, c5, o5, c10, o10, r17, fg_ratio, row_projection, col_projection, grammar_signature, adjacency_signature)
             z_loss = losses["z"].mean()
@@ -388,7 +381,17 @@ def main(argv: list[str] | None = None) -> int:
             fg_loss = losses["fg"].mean()
             sig_loss = losses["sig"].mean()
             adj_loss = losses["adj"].mean()
-            fg_barrier, occ_barrier, fg_rates = _category_barrier(batch["categories"], outputs["fg_ratio_pred"], outputs["o5_logits"], outputs["o10_logits"], category_fg_stats, category_occ_stats)
+            fg_barrier, occ_barrier, fg_rates = _category_barrier(
+                outputs["fg_ratio_pred"],
+                outputs["o5_logits"],
+                outputs["o10_logits"],
+                fg_valid_low,
+                fg_valid_high,
+                o5_valid_low_ratio,
+                o5_valid_high_ratio,
+                o10_valid_low_ratio,
+                o10_valid_high_ratio,
+            )
             loss = losses["total"].mean() + float(loss_cf["fg_barrier"]) * fg_barrier + float(loss_cf["occ_barrier"]) * occ_barrier + float(loss_cf["anti_empty_full"]) * (fg_barrier + occ_barrier)
             optimizer.zero_grad()
             loss.backward()
@@ -472,9 +475,25 @@ def main(argv: list[str] | None = None) -> int:
                 col_projection = batch["col_projection"].to(device)
                 grammar_signature = batch["grammar_signature"].to(device)
                 adjacency_signature = batch["adjacency_signature"].to(device)
+                fg_valid_low = batch["fg_valid_low"].to(device)
+                fg_valid_high = batch["fg_valid_high"].to(device)
+                o5_valid_low_ratio = batch["o5_valid_low_ratio"].to(device)
+                o5_valid_high_ratio = batch["o5_valid_high_ratio"].to(device)
+                o10_valid_low_ratio = batch["o10_valid_low_ratio"].to(device)
+                o10_valid_high_ratio = batch["o10_valid_high_ratio"].to(device)
                 outputs = model(category_ids, z_ids=z, mode_mask=mode_mask, sample_mode="teacher")
                 losses = _planner_losses_v11(functional, outputs, z, mode_mask, c5, o5, c10, o10, r17, fg_ratio, row_projection, col_projection, grammar_signature, adjacency_signature)
-                fg_barrier, occ_barrier, fg_rates = _category_barrier(batch["categories"], outputs["fg_ratio_pred"], outputs["o5_logits"], outputs["o10_logits"], category_fg_stats, category_occ_stats)
+                fg_barrier, occ_barrier, fg_rates = _category_barrier(
+                    outputs["fg_ratio_pred"],
+                    outputs["o5_logits"],
+                    outputs["o10_logits"],
+                    fg_valid_low,
+                    fg_valid_high,
+                    o5_valid_low_ratio,
+                    o5_valid_high_ratio,
+                    o10_valid_low_ratio,
+                    o10_valid_high_ratio,
+                )
                 val_loss += float((losses["total"].mean() + float(loss_cf["fg_barrier"]) * fg_barrier + float(loss_cf["occ_barrier"]) * occ_barrier + float(loss_cf["anti_empty_full"]) * (fg_barrier + occ_barrier)).item())
                 val_batches += 1
                 probs = functional.softmax(losses["masked_z_logits"], dim=-1)
