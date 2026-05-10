@@ -10,12 +10,20 @@ data:
   coarse_threshold: 0.25
 
 planner:
-  mode_type: discrete_kmeans
+  mode_type: category_local_kmeans
   num_modes: 128
+  max_num_modes_per_category: 16
+  num_modes_per_category: 16
+  min_samples_per_mode: 20
   category_embed_dim: 256
   mode_embed_dim: 256
   hidden_dim: 384
   num_layers: 4
+
+cache:
+  use_category_local_modes: true
+  grammar_descriptor: true
+  coarse_sizes: [5, 10]
 
 refiner:
   type: plan_conditioned_maskgit
@@ -34,13 +42,20 @@ loss:
   count: 0.1
   coarse_plan: 0.1
   syntax: 0.0
+  anti_empty_full: 0.2
+  fg_barrier: 0.2
+  occ_barrier: 0.2
 
 sampling:
   num_candidates: 64
+  planner_oversample: 128
+  num_valid_plans: 32
   z_temperature: 1.2
   z_top_p: 0.9
   refinement_steps: 12
   rerank: true
+  filter_degenerate_plans: true
+  min_valid_plan_rate_warning: 0.5
 
 train_planner:
   output_dir: struct_latentplan_v1/runs/planner_latentplan_v1_5x5_k128

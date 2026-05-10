@@ -59,6 +59,7 @@ class LatentPlanDataset:
         categories = sorted({sample["category"] for sample in self.samples})
         self.category_to_id = category_to_id or {category: index for index, category in enumerate(categories)}
         self.num_classes = int(self.cache_meta.get("num_classes", 17))
+        self.max_num_modes_per_category = int(self.cache_meta.get("max_num_modes_per_category", self.cache_meta.get("num_modes_per_category", 16)))
         self.palette_path = str(palette_path) if palette_path is not None else None
         self._validate_alignment()
 
@@ -127,11 +128,23 @@ class LatentPlanDataset:
             "category": category,
             "category_id": int(self.category_to_id[category]),
             "y20": getattr(torch, "tensor")(y20, dtype=getattr(torch, "long")),
-            "z": getattr(torch, "tensor")(int(cached["z"]), dtype=getattr(torch, "long")),
+            "z": getattr(torch, "tensor")(int(cached.get("local_z", cached["z"])), dtype=getattr(torch, "long")),
+            "local_z": getattr(torch, "tensor")(int(cached.get("local_z", cached["z"])), dtype=getattr(torch, "long")),
+            "num_modes_for_category": getattr(torch, "tensor")(int(cached.get("num_modes_for_category", self.max_num_modes_per_category)), dtype=getattr(torch, "long")),
+            "mode_mask": getattr(torch, "tensor")(
+                [1 if mode_index < int(cached.get("num_modes_for_category", self.max_num_modes_per_category)) else 0 for mode_index in range(self.max_num_modes_per_category)],
+                dtype=getattr(torch, "bool"),
+            ),
             "c5": getattr(torch, "tensor")(cached["c5"], dtype=getattr(torch, "long")),
             "o5": getattr(torch, "tensor")(cached["o5"], dtype=getattr(torch, "float32")),
+            "c10": getattr(torch, "tensor")(cached["c10"], dtype=getattr(torch, "long")),
+            "o10": getattr(torch, "tensor")(cached["o10"], dtype=getattr(torch, "float32")),
             "r17": getattr(torch, "tensor")(cached["r17"], dtype=getattr(torch, "float32")),
             "fg_ratio": getattr(torch, "tensor")(float(cached["fg_ratio"]), dtype=getattr(torch, "float32")),
+            "row_projection": getattr(torch, "tensor")(cached["row_projection"], dtype=getattr(torch, "float32")),
+            "col_projection": getattr(torch, "tensor")(cached["col_projection"], dtype=getattr(torch, "float32")),
+            "grammar_signature": getattr(torch, "tensor")(cached["grammar_signature"], dtype=getattr(torch, "float32")),
+            "adjacency_signature": getattr(torch, "tensor")(cached["adjacency_signature"], dtype=getattr(torch, "float32")),
             "metadata": cached,
         }
 
@@ -144,10 +157,19 @@ def collate_batch(batch: list[dict[str, object]]) -> dict[str, object]:
         "category_ids": getattr(torch, "tensor")([int(sample["category_id"]) for sample in batch], dtype=getattr(torch, "long")),
         "y20": getattr(torch, "stack")([sample["y20"] for sample in batch]),
         "z": getattr(torch, "stack")([sample["z"] for sample in batch]),
+        "local_z": getattr(torch, "stack")([sample["local_z"] for sample in batch]),
+        "num_modes_for_category": getattr(torch, "stack")([sample["num_modes_for_category"] for sample in batch]),
+        "mode_mask": getattr(torch, "stack")([sample["mode_mask"] for sample in batch]),
         "c5": getattr(torch, "stack")([sample["c5"] for sample in batch]),
         "o5": getattr(torch, "stack")([sample["o5"] for sample in batch]),
+        "c10": getattr(torch, "stack")([sample["c10"] for sample in batch]),
+        "o10": getattr(torch, "stack")([sample["o10"] for sample in batch]),
         "r17": getattr(torch, "stack")([sample["r17"] for sample in batch]),
         "fg_ratio": getattr(torch, "stack")([sample["fg_ratio"] for sample in batch]),
+        "row_projection": getattr(torch, "stack")([sample["row_projection"] for sample in batch]),
+        "col_projection": getattr(torch, "stack")([sample["col_projection"] for sample in batch]),
+        "grammar_signature": getattr(torch, "stack")([sample["grammar_signature"] for sample in batch]),
+        "adjacency_signature": getattr(torch, "stack")([sample["adjacency_signature"] for sample in batch]),
         "metadata": [sample["metadata"] for sample in batch],
     }
 

@@ -208,6 +208,295 @@ def compute_plan_statistics(grid20: list[list[int]], background_class_id: int, c
     }
 
 
+def _coarse_plan(grid20: list[list[int]], background_class_id: int, coarse_size: int, coarse_threshold: float) -> tuple[list[list[int]], list[list[int]]]:
+    size = len(grid20)
+    block = max(1, size // coarse_size)
+    o: list[list[int]] = []
+    c: list[list[int]] = []
+    for y_pos in range(coarse_size):
+        occ_row: list[int] = []
+        cls_row: list[int] = []
+        for x_pos in range(coarse_size):
+            values: list[int] = []
+            fg_values: list[int] = []
+            for inner_y in range(y_pos * block, min(size, (y_pos + 1) * block)):
+                for inner_x in range(x_pos * block, min(size, (x_pos + 1) * block)):
+                    value = int(grid20[inner_y][inner_x])
+                    values.append(value)
+                    if value != background_class_id:
+                        fg_values.append(value)
+            fg_local_ratio = len(fg_values) / float(max(1, len(values)))
+            if fg_local_ratio >= float(coarse_threshold) and fg_values:
+                occ_row.append(1)
+                counts: dict[int, int] = {}
+                for value in fg_values:
+                    counts[value] = counts.get(value, 0) + 1
+                dominant = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+                cls_row.append(int(dominant))
+            else:
+                occ_row.append(0)
+                cls_row.append(int(background_class_id))
+        o.append(occ_row)
+        c.append(cls_row)
+    return o, c
+
+
+def _projection_stats(values: list[float]) -> list[float]:
+    if not values:
+        return [0.0, 0.0, 0.0]
+    mean_value = sum(values) / float(len(values))
+    variance = sum((value - mean_value) ** 2 for value in values) / float(len(values))
+    peaks = 0
+    for index, value in enumerate(values):
+        left = values[index - 1] if index > 0 else value
+        right = values[index + 1] if index + 1 < len(values) else value
+        if value > mean_value and value >= left and value >= right:
+            peaks += 1
+    return [mean_value, variance, peaks / float(max(1, len(values)))]
+
+
+def _run_stats(lines: list[list[bool]]) -> list[float]:
+    num_runs_list: list[float] = []
+    mean_len_list: list[float] = []
+    max_len_list: list[float] = []
+    for line in lines:
+        runs: list[int] = []
+        current = 0
+        for value in line:
+            if value:
+                current += 1
+            elif current > 0:
+                runs.append(current)
+                current = 0
+        if current > 0:
+            runs.append(current)
+        if runs:
+            num_runs_list.append(float(len(runs)))
+            mean_len_list.append(sum(runs) / float(len(runs)))
+            max_len_list.append(float(max(runs)))
+        else:
+            num_runs_list.append(0.0)
+            mean_len_list.append(0.0)
+            max_len_list.append(0.0)
+    return [
+        sum(num_runs_list) / float(max(1, len(num_runs_list))),
+        sum(mean_len_list) / float(max(1, len(mean_len_list))),
+        sum(max_len_list) / float(max(1, len(max_len_list))),
+    ]
+
+
+def _adjacency_signature(grid20: list[list[int]], num_classes: int) -> list[float]:
+    counts = [[0.0 for _ in range(num_classes)] for _ in range(num_classes)]
+    height = len(grid20)
+    width = len(grid20[0]) if height else 0
+    total = 0.0
+    for y_pos in range(height):
+        for x_pos in range(width):
+            src = int(grid20[y_pos][x_pos])
+            for next_y, next_x in ((y_pos + 1, x_pos), (y_pos, x_pos + 1)):
+                if 0 <= next_y < height and 0 <= next_x < width:
+                    dst = int(grid20[next_y][next_x])
+                    counts[src][dst] += 1.0
+                    counts[dst][src] += 1.0
+                    total += 2.0
+    if total <= 0:
+        return [0.0 for _ in range(num_classes * num_classes)]
+    return [value / total for row in counts for value in row]
+
+
+def _transition_2x2_stats(grid20: list[list[int]], background_class_id: int) -> list[float]:
+    height = len(grid20)
+    width = len(grid20[0]) if height else 0
+    total = 0
+    all_same = 0
+    has_background = 0
+    fg_mixed = 0
+    unique_mean = 0.0
+    diag_change = 0
+    vertical_change = 0
+    horizontal_change = 0
+    for y_pos in range(max(0, height - 1)):
+        for x_pos in range(max(0, width - 1)):
+            block = [
+                int(grid20[y_pos][x_pos]),
+                int(grid20[y_pos][x_pos + 1]),
+                int(grid20[y_pos + 1][x_pos]),
+                int(grid20[y_pos + 1][x_pos + 1]),
+            ]
+            total += 1
+            unique = set(block)
+            unique_mean += len(unique)
+            if len(unique) == 1:
+                all_same += 1
+            if background_class_id in unique:
+                has_background += 1
+            fg_unique = {value for value in unique if value != background_class_id}
+            if len(fg_unique) >= 2:
+                fg_mixed += 1
+            if block[0] != block[3] or block[1] != block[2]:
+                diag_change += 1
+            if block[0] != block[2] or block[1] != block[3]:
+                vertical_change += 1
+            if block[0] != block[1] or block[2] != block[3]:
+                horizontal_change += 1
+    denom = float(max(1, total))
+    return [
+        all_same / denom,
+        has_background / denom,
+        fg_mixed / denom,
+        unique_mean / denom,
+        diag_change / denom,
+        vertical_change / denom,
+        horizontal_change / denom,
+    ]
+
+
+def compute_grammar_descriptor(grid20: list[list[int]], background_class_id: int, coarse_threshold: float, num_classes: int = 17) -> dict[str, object]:
+    size = len(grid20)
+    fg20 = [[value != background_class_id for value in row] for row in grid20]
+    o5, c5 = _coarse_plan(grid20, background_class_id, coarse_size=5, coarse_threshold=coarse_threshold)
+    o10, c10 = _coarse_plan(grid20, background_class_id, coarse_size=10, coarse_threshold=coarse_threshold)
+    row_projection = [sum(1 for value in row if value != background_class_id) / float(max(1, len(row))) for row in grid20]
+    col_projection = [
+        sum(1 for y_pos in range(size) if grid20[y_pos][x_pos] != background_class_id) / float(max(1, size))
+        for x_pos in range(size)
+    ]
+    row_run_stats = _run_stats(fg20)
+    col_run_stats = _run_stats([[fg20[y_pos][x_pos] for y_pos in range(size)] for x_pos in range(size)])
+    adjacency_signature = _adjacency_signature(grid20, num_classes=num_classes)
+    transition_2x2_stats = _transition_2x2_stats(grid20, background_class_id=background_class_id)
+    vertical_pairs = 0
+    vertical_same = 0
+    horizontal_pairs = 0
+    horizontal_same = 0
+    for y_pos in range(size):
+        for x_pos in range(size):
+            if y_pos + 1 < size:
+                vertical_pairs += 1
+                if fg20[y_pos][x_pos] and fg20[y_pos + 1][x_pos]:
+                    vertical_same += 1
+            if x_pos + 1 < size:
+                horizontal_pairs += 1
+                if fg20[y_pos][x_pos] and fg20[y_pos][x_pos + 1]:
+                    horizontal_same += 1
+    vertical_continuity = vertical_same / float(max(1, vertical_pairs))
+    horizontal_continuity = horizontal_same / float(max(1, horizontal_pairs))
+    left = sum(1 for y_pos in range(size) for x_pos in range(size // 2) if fg20[y_pos][x_pos] == fg20[y_pos][size - 1 - x_pos])
+    symmetry_score = left / float(max(1, size * (size // 2)))
+    center_start = int(size * 0.3)
+    center_end = int(size * 0.7)
+    center_fg = sum(1 for y_pos in range(size) for x_pos in range(center_start, center_end) if fg20[y_pos][x_pos])
+    total_fg = sum(1 for row in fg20 for value in row if value)
+    center_band_score = center_fg / float(max(1, total_fg))
+    stripe_score = _projection_stats(col_projection)
+    grammar_signature = row_run_stats + col_run_stats + transition_2x2_stats + [
+        vertical_continuity,
+        horizontal_continuity,
+        symmetry_score,
+        center_band_score,
+    ] + stripe_score
+    descriptor = (
+        [float(value) for row in o5 for value in row]
+        + [float(value) for row in o10 for value in row]
+        + row_projection
+        + col_projection
+        + row_run_stats
+        + col_run_stats
+        + adjacency_signature
+        + transition_2x2_stats
+        + [vertical_continuity, horizontal_continuity, symmetry_score, center_band_score]
+        + stripe_score
+    )
+    descriptor_slices = {
+        "o5": [0, 25],
+        "o10": [25, 125],
+        "row_projection": [125, 145],
+        "col_projection": [145, 165],
+        "row_run_stats": [165, 168],
+        "col_run_stats": [168, 171],
+        "adjacency_signature": [171, 460],
+        "transition_2x2_stats": [460, 467],
+        "grammar_signature_tail": [467, len(descriptor)],
+    }
+    return {
+        "o5": o5,
+        "c5": c5,
+        "o10": o10,
+        "c10": c10,
+        "row_projection": row_projection,
+        "col_projection": col_projection,
+        "row_run_stats": row_run_stats,
+        "col_run_stats": col_run_stats,
+        "adjacency_signature": adjacency_signature,
+        "transition_2x2_stats": transition_2x2_stats,
+        "vertical_continuity": vertical_continuity,
+        "horizontal_continuity": horizontal_continuity,
+        "symmetry_score": symmetry_score,
+        "center_band_score": center_band_score,
+        "stripe_score": stripe_score,
+        "grammar_signature": grammar_signature,
+        "descriptor": descriptor,
+        "descriptor_slices": descriptor_slices,
+    }
+
+
+def compute_category_fg_stats(items: list[dict[str, object]], categories: list[str]) -> dict[str, dict[str, float]]:
+    stats: dict[str, dict[str, float]] = {}
+    for category in categories:
+        values = sorted(float(item["fg_ratio"]) for item in items if item["category"] == category)
+        if not values:
+            continue
+        def _q(q: float) -> float:
+            index = min(len(values) - 1, max(0, int(round((len(values) - 1) * q))))
+            return values[index]
+        mean_value = sum(values) / float(len(values))
+        std_value = (sum((value - mean_value) ** 2 for value in values) / float(max(1, len(values)))) ** 0.5
+        q05 = _q(0.05)
+        q95 = _q(0.95)
+        stats[category] = {
+            "count": float(len(values)),
+            "mean": mean_value,
+            "std": std_value,
+            "q01": _q(0.01),
+            "q05": q05,
+            "q10": _q(0.10),
+            "q50": _q(0.50),
+            "q90": _q(0.90),
+            "q95": q95,
+            "q99": _q(0.99),
+            "valid_low": max(0.02, q05 - 0.02),
+            "valid_high": min(0.95, q95 + 0.02),
+        }
+    return stats
+
+
+def compute_category_occ_stats(items: list[dict[str, object]], categories: list[str]) -> dict[str, dict[str, float]]:
+    stats: dict[str, dict[str, float]] = {}
+    for category in categories:
+        o5_counts = sorted(sum(int(value) for row in item["o5"] for value in row) for item in items if item["category"] == category)
+        o10_counts = sorted(sum(int(value) for row in item["o10"] for value in row) for item in items if item["category"] == category)
+        if not o5_counts or not o10_counts:
+            continue
+        def _q(values: list[int], q: float) -> float:
+            index = min(len(values) - 1, max(0, int(round((len(values) - 1) * q))))
+            return float(values[index])
+        q05_o5 = _q(o5_counts, 0.05)
+        q95_o5 = _q(o5_counts, 0.95)
+        q05_o10 = _q(o10_counts, 0.05)
+        q95_o10 = _q(o10_counts, 0.95)
+        stats[category] = {
+            "o5_fg_cells_q05": q05_o5,
+            "o5_fg_cells_q95": q95_o5,
+            "o10_fg_cells_q05": q05_o10,
+            "o10_fg_cells_q95": q95_o10,
+            "valid_o5_min_cells": max(0.0, q05_o5 - 1.0),
+            "valid_o5_max_cells": min(25.0, q95_o5 + 1.0),
+            "valid_o10_min_cells": max(0.0, q05_o10 - 2.0),
+            "valid_o10_max_cells": min(100.0, q95_o10 + 2.0),
+        }
+    return stats
+
+
 def largest_component_ratio(mask: list[list[bool]]) -> float:
     total = sum(1 for row in mask for value in row if value)
     if total <= 0:

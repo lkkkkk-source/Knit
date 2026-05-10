@@ -48,7 +48,18 @@ This line is explicitly **not**:
 
 ## Early Success Criteria
 
-This first version is meant to test whether explicit global planning improves the main failure modes of `struct_maskgit_v1`.
+The current v1.1 variant is meant to address the failure mode where v1 learned generic foreground blobs instead of category-specific knitting grammar.
+
+v1.1 currently uses:
+
+- category-local KMeans
+- `Kmax = 16`
+- per-category `mode_mask`
+- 10x10 structural canvas
+- grammar-aware descriptor
+- anti-empty/full barrier
+- internal plan filtering
+- category-distance diagnostic
 
 Early success criteria:
 

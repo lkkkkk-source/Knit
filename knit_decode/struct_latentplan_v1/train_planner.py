@@ -72,6 +72,107 @@ def _batch_losses(functional: object, outputs: dict[str, object], z: object, c5:
     }
 
 
+def _planner_losses_v11(
+    functional: object,
+    outputs: dict[str, object],
+    local_z: object,
+    mode_mask: object,
+    c5: object,
+    o5: object,
+    c10: object,
+    o10: object,
+    r17: object,
+    fg_ratio: object,
+    row_projection: object,
+    col_projection: object,
+    grammar_signature: object,
+    adjacency_signature: object,
+) -> dict[str, object]:
+    invalid_local = local_z >= mode_mask.sum(dim=-1).to(dtype=local_z.dtype)
+    if bool(invalid_local.any().item()):
+        bad_index = int(invalid_local.nonzero(as_tuple=False)[0].item())
+        raise ValueError(
+            f"local_z out of range for mode_mask at batch_index={bad_index}: "
+            f"local_z={int(local_z[bad_index].item())} valid_modes={int(mode_mask[bad_index].sum().item())}"
+        )
+    masked_logits = outputs["z_logits"].masked_fill(mode_mask.logical_not(), float("-inf"))
+    z_loss = functional.cross_entropy(masked_logits, local_z, reduction="none")
+    c5_loss = functional.cross_entropy(outputs["c5_logits"], c5, reduction="none").mean(dim=(1, 2))
+    o5_loss = functional.binary_cross_entropy_with_logits(outputs["o5_logits"].squeeze(1), o5, reduction="none").mean(dim=(1, 2))
+    c10_loss = functional.cross_entropy(outputs["c10_logits"], c10, reduction="none").mean(dim=(1, 2))
+    o10_loss = functional.binary_cross_entropy_with_logits(outputs["o10_logits"].squeeze(1), o10, reduction="none").mean(dim=(1, 2))
+    r17_loss = (outputs["r17_pred"] - r17).abs().mean(dim=1)
+    fg_loss = (outputs["fg_ratio_pred"] - fg_ratio).abs()
+    row_loss = (outputs["row_projection_pred"] - row_projection).abs().mean(dim=1)
+    col_loss = (outputs["col_projection_pred"] - col_projection).abs().mean(dim=1)
+    sig_loss = (outputs["grammar_signature_pred"] - grammar_signature).abs().mean(dim=1)
+    adj_loss = (outputs["adjacency_signature_pred"] - adjacency_signature).abs().mean(dim=1)
+    total = z_loss + c5_loss + o5_loss + c10_loss + o10_loss + 0.1 * r17_loss + 0.1 * fg_loss + 0.2 * row_loss + 0.2 * col_loss + 0.1 * sig_loss + 0.1 * adj_loss
+    return {
+        "total": total,
+        "z": z_loss,
+        "masked_z_logits": masked_logits,
+        "c5": c5_loss,
+        "o5": o5_loss,
+        "c10": c10_loss,
+        "o10": o10_loss,
+        "count": r17_loss,
+        "fg": fg_loss,
+        "row": row_loss,
+        "col": col_loss,
+        "sig": sig_loss,
+        "adj": adj_loss,
+    }
+
+
+def _category_barrier(category_names: list[str], fg_ratio_pred: object, o5_logits: object, o10_logits: object, category_fg_stats: dict[str, dict[str, float]], category_occ_stats: dict[str, dict[str, float]]) -> tuple[object, object, dict[str, float]]:
+    torch, _ = _require_torch()
+    functional = __import__("importlib").import_module("torch.nn.functional")
+    mean_o5 = getattr(torch, "sigmoid")(o5_logits).mean(dim=(1, 2, 3))
+    mean_o10 = getattr(torch, "sigmoid")(o10_logits).mean(dim=(1, 2, 3))
+    fg_barrier_terms = []
+    occ_barrier_terms = []
+    all_bg = 0
+    all_fg = 0
+    valid_fg = 0
+    for index, category in enumerate(category_names):
+        fg_stats = category_fg_stats.get(category, None)
+        occ_stats = category_occ_stats.get(category, None)
+        if fg_stats is None or occ_stats is None:
+            fg_barrier_terms.append(fg_ratio_pred[index] * 0.0)
+            occ_barrier_terms.append(mean_o5[index] * 0.0)
+            continue
+        valid_low = float(fg_stats["valid_low"])
+        valid_high = float(fg_stats["valid_high"])
+        fg_value = fg_ratio_pred[index]
+        fg_barrier_terms.append(functional.softplus(valid_low - fg_value) + functional.softplus(fg_value - valid_high))
+        low_o5 = float(occ_stats["valid_o5_min_cells"]) / 25.0
+        high_o5 = float(occ_stats["valid_o5_max_cells"]) / 25.0
+        low_o10 = float(occ_stats["valid_o10_min_cells"]) / 100.0
+        high_o10 = float(occ_stats["valid_o10_max_cells"]) / 100.0
+        occ_barrier_terms.append(
+            functional.softplus(low_o5 - mean_o5[index])
+            + functional.softplus(mean_o5[index] - high_o5)
+            + functional.softplus(low_o10 - mean_o10[index])
+            + functional.softplus(mean_o10[index] - high_o10)
+        )
+        fg_scalar = float(fg_value.item())
+        if fg_scalar <= 0.02:
+            all_bg += 1
+        if fg_scalar >= 0.98:
+            all_fg += 1
+        if valid_low <= fg_scalar <= valid_high:
+            valid_fg += 1
+    fg_barrier = getattr(torch, "stack")(fg_barrier_terms).mean() if fg_barrier_terms else getattr(torch, "tensor")(0.0, device=fg_ratio_pred.device)
+    occ_barrier = getattr(torch, "stack")(occ_barrier_terms).mean() if occ_barrier_terms else getattr(torch, "tensor")(0.0, device=fg_ratio_pred.device)
+    rates = {
+        "pred_all_background_rate": all_bg / float(max(1, len(category_names))),
+        "pred_all_foreground_rate": all_fg / float(max(1, len(category_names))),
+        "pred_valid_fg_rate": valid_fg / float(max(1, len(category_names))),
+    }
+    return fg_barrier, occ_barrier, rates
+
+
 def _diag_update(store: dict[str, object], probs: object, sampled_z: object, categories: list[str]) -> None:
     torch, _ = _require_torch()
     entropy = -(probs.clamp_min(1e-8) * probs.clamp_min(1e-8).log()).sum(dim=-1)
@@ -139,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     data_cf = config["data"]
     planner_cf = config["planner"]
     train_cf = config["train_planner"]
+    cache_cf = config.get("cache", {})
+    loss_cf = config["loss"]
     manifest_path = Path(data_cf["train_manifest"])
     val_manifest_path = Path(data_cf["val_manifest"])
     plan_cache_path = Path(data_cf["plan_cache_dir"]) / f"{manifest_path.stem}.pt"
@@ -189,6 +292,10 @@ def main(argv: list[str] | None = None) -> int:
         mode_embed_dim=int(planner_cf["mode_embed_dim"]),
         hidden_dim=int(planner_cf["hidden_dim"]),
         num_layers=int(planner_cf["num_layers"]),
+        coarse_size_10=10,
+        grammar_dim=len(train_dataset[0]["grammar_signature"]),
+        adjacency_dim=len(train_dataset[0]["adjacency_signature"]),
+        max_num_modes_per_category=int(planner_cf.get("max_num_modes_per_category", 16)),
     )
     model.to(device)
     optimizer = getattr(optim, "AdamW")(model.parameters(), lr=float(train_cf["learning_rate"]), weight_decay=float(train_cf["weight_decay"]))
@@ -197,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
     z_category_history: dict[str, dict[str, object]] = {}
     best_metric_name = "val_seen_loss"
     best_metric_value = float("inf")
+    category_fg_stats = train_dataset.cache_meta.get("category_fg_stats", {})
+    category_occ_stats = train_dataset.cache_meta.get("category_occ_stats", {})
     print(format_metric_line("categories:", [("num_categories", len(category_to_id)), ("train_categories", len(train_categories)), ("val_categories", len(val_categories)), ("unseen_val_categories", unseen_val_categories)]))
     for epoch in range(int(train_cf["epochs"])):
         print(f"\nepoch {epoch + 1}/{int(train_cf['epochs'])}")
@@ -205,39 +314,69 @@ def main(argv: list[str] | None = None) -> int:
         total_z = 0.0
         total_c5 = 0.0
         total_o5 = 0.0
+        total_c10 = 0.0
+        total_o10 = 0.0
         total_r17 = 0.0
         total_fg = 0.0
+        total_sig = 0.0
+        total_adj = 0.0
+        total_fg_barrier = 0.0
+        total_occ_barrier = 0.0
         batch_count = 0
         train_diag: dict[str, object] = {}
+        train_all_bg = 0.0
+        train_all_fg = 0.0
+        train_valid_fg = 0.0
         for batch in train_loader:
             category_ids = batch["category_ids"].to(device)
-            z = batch["z"].to(device)
+            z = batch["local_z"].to(device)
+            mode_mask = batch["mode_mask"].to(device)
             c5 = batch["c5"].to(device)
             o5 = batch["o5"].to(device)
+            c10 = batch["c10"].to(device)
+            o10 = batch["o10"].to(device)
             r17 = batch["r17"].to(device)
             fg_ratio = batch["fg_ratio"].to(device)
-            outputs = model(category_ids, z_ids=z, sample_mode="teacher")
-            losses = _batch_losses(functional, outputs, z, c5, o5, r17, fg_ratio)
+            row_projection = batch["row_projection"].to(device)
+            col_projection = batch["col_projection"].to(device)
+            grammar_signature = batch["grammar_signature"].to(device)
+            adjacency_signature = batch["adjacency_signature"].to(device)
+            outputs = model(category_ids, z_ids=z, mode_mask=mode_mask, sample_mode="teacher")
+            losses = _planner_losses_v11(functional, outputs, z, mode_mask, c5, o5, c10, o10, r17, fg_ratio, row_projection, col_projection, grammar_signature, adjacency_signature)
             z_loss = losses["z"].mean()
             c5_loss = losses["c5"].mean()
             o5_loss = losses["o5"].mean()
+            c10_loss = losses["c10"].mean()
+            o10_loss = losses["o10"].mean()
             r17_loss = losses["count"].mean()
             fg_loss = losses["fg"].mean()
-            loss = losses["total"].mean()
+            sig_loss = losses["sig"].mean()
+            adj_loss = losses["adj"].mean()
+            fg_barrier, occ_barrier, fg_rates = _category_barrier(batch["categories"], outputs["fg_ratio_pred"], outputs["o5_logits"], outputs["o10_logits"], category_fg_stats, category_occ_stats)
+            loss = losses["total"].mean() + float(loss_cf["fg_barrier"]) * fg_barrier + float(loss_cf["occ_barrier"]) * occ_barrier + float(loss_cf["anti_empty_full"]) * (fg_barrier + occ_barrier)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            probs = functional.softmax(outputs["z_logits"], dim=-1)
+            probs = functional.softmax(losses["masked_z_logits"], dim=-1)
             sampled_z = getattr(torch, "distributions").Categorical(probs=probs).sample()
             _diag_update(train_diag, probs, sampled_z, batch["categories"])
             total_loss += float(loss.item())
             total_z += float(z_loss.item())
             total_c5 += float(c5_loss.item())
             total_o5 += float(o5_loss.item())
+            total_c10 += float(c10_loss.item())
+            total_o10 += float(o10_loss.item())
             total_r17 += float(r17_loss.item())
             total_fg += float(fg_loss.item())
+            total_sig += float(sig_loss.item())
+            total_adj += float(adj_loss.item())
+            total_fg_barrier += float(fg_barrier.item())
+            total_occ_barrier += float(occ_barrier.item())
+            train_all_bg += fg_rates["pred_all_background_rate"]
+            train_all_fg += fg_rates["pred_all_foreground_rate"]
+            train_valid_fg += fg_rates["pred_valid_fg_rate"]
             batch_count += 1
-            print_progress("planner-train", batch_count, len(train_loader), f"loss={total_loss / batch_count:.4f} z={total_z / batch_count:.4f} c5={total_c5 / batch_count:.4f} o5={total_o5 / batch_count:.4f}")
+            print_progress("planner-train", batch_count, len(train_loader), f"loss={total_loss / batch_count:.4f} z={total_z / batch_count:.4f} c5={total_c5 / batch_count:.4f} c10={total_c10 / batch_count:.4f} fg_bar={total_fg_barrier / batch_count:.4f} occ_bar={total_occ_barrier / batch_count:.4f}")
         finish_progress()
 
         model.eval()
@@ -253,23 +392,41 @@ def main(argv: list[str] | None = None) -> int:
         val_unseen_o5: list[float] = []
         val_seen_count: list[float] = []
         val_unseen_count: list[float] = []
+        val_fg_barrier = 0.0
+        val_occ_barrier = 0.0
+        val_all_bg = 0.0
+        val_all_fg = 0.0
+        val_valid_fg = 0.0
         val_diag: dict[str, object] = {}
         train_category_set = set(train_categories)
         with getattr(torch, "no_grad")():
             for batch in val_loader:
                 category_ids = batch["category_ids"].to(device)
-                z = batch["z"].to(device)
+                z = batch["local_z"].to(device)
+                mode_mask = batch["mode_mask"].to(device)
                 c5 = batch["c5"].to(device)
                 o5 = batch["o5"].to(device)
+                c10 = batch["c10"].to(device)
+                o10 = batch["o10"].to(device)
                 r17 = batch["r17"].to(device)
                 fg_ratio = batch["fg_ratio"].to(device)
-                outputs = model(category_ids, z_ids=z, sample_mode="teacher")
-                losses = _batch_losses(functional, outputs, z, c5, o5, r17, fg_ratio)
-                val_loss += float(losses["total"].mean().item())
+                row_projection = batch["row_projection"].to(device)
+                col_projection = batch["col_projection"].to(device)
+                grammar_signature = batch["grammar_signature"].to(device)
+                adjacency_signature = batch["adjacency_signature"].to(device)
+                outputs = model(category_ids, z_ids=z, mode_mask=mode_mask, sample_mode="teacher")
+                losses = _planner_losses_v11(functional, outputs, z, mode_mask, c5, o5, c10, o10, r17, fg_ratio, row_projection, col_projection, grammar_signature, adjacency_signature)
+                fg_barrier, occ_barrier, fg_rates = _category_barrier(batch["categories"], outputs["fg_ratio_pred"], outputs["o5_logits"], outputs["o10_logits"], category_fg_stats, category_occ_stats)
+                val_loss += float((losses["total"].mean() + float(loss_cf["fg_barrier"]) * fg_barrier + float(loss_cf["occ_barrier"]) * occ_barrier + float(loss_cf["anti_empty_full"]) * (fg_barrier + occ_barrier)).item())
                 val_batches += 1
-                probs = functional.softmax(outputs["z_logits"], dim=-1)
+                probs = functional.softmax(losses["masked_z_logits"], dim=-1)
                 sampled_z = getattr(torch, "distributions").Categorical(probs=probs).sample()
                 _diag_update(val_diag, probs, sampled_z, batch["categories"])
+                val_fg_barrier += float(fg_barrier.item())
+                val_occ_barrier += float(occ_barrier.item())
+                val_all_bg += fg_rates["pred_all_background_rate"]
+                val_all_fg += fg_rates["pred_all_foreground_rate"]
+                val_valid_fg += fg_rates["pred_valid_fg_rate"]
                 for sample_index, category in enumerate(batch["categories"]):
                     target_total = val_seen_total if category in train_category_set else val_unseen_total
                     target_z = val_seen_z if category in train_category_set else val_unseen_z
@@ -287,6 +444,15 @@ def main(argv: list[str] | None = None) -> int:
             "train_z": total_z / max(1, batch_count),
             "train_c5": total_c5 / max(1, batch_count),
             "train_o5": total_o5 / max(1, batch_count),
+            "train_c10": total_c10 / max(1, batch_count),
+            "train_o10": total_o10 / max(1, batch_count),
+            "train_signature": total_sig / max(1, batch_count),
+            "train_adj": total_adj / max(1, batch_count),
+            "train_fg_barrier": total_fg_barrier / max(1, batch_count),
+            "train_occ_barrier": total_occ_barrier / max(1, batch_count),
+            "train_pred_all_background_rate": train_all_bg / max(1, batch_count),
+            "train_pred_all_foreground_rate": train_all_fg / max(1, batch_count),
+            "train_pred_valid_fg_rate": train_valid_fg / max(1, batch_count),
             "val_loss": val_loss / max(1, val_batches),
             "val_seen_loss": _masked_mean(val_seen_total),
             "val_unseen_loss": _masked_mean(val_unseen_total),
@@ -298,6 +464,11 @@ def main(argv: list[str] | None = None) -> int:
             "val_unseen_o5": _masked_mean(val_unseen_o5),
             "val_seen_count": _masked_mean(val_seen_count),
             "val_unseen_count": _masked_mean(val_unseen_count),
+            "val_fg_barrier": val_fg_barrier / max(1, val_batches),
+            "val_occ_barrier": val_occ_barrier / max(1, val_batches),
+            "val_pred_all_background_rate": val_all_bg / max(1, val_batches),
+            "val_pred_all_foreground_rate": val_all_fg / max(1, val_batches),
+            "val_pred_valid_fg_rate": val_valid_fg / max(1, val_batches),
         }
         summary.update({f"train_{key}": value for key, value in _diag_finalize(train_diag, int(planner_cf["num_modes"])).items() if key != "z_by_category"})
         summary.update({f"val_{key}": value for key, value in _diag_finalize(val_diag, int(planner_cf["num_modes"])).items() if key != "z_by_category"})
@@ -306,11 +477,12 @@ def main(argv: list[str] | None = None) -> int:
             "val": _diag_finalize(val_diag, int(planner_cf["num_modes"]))["z_by_category"],
         }
         history.append(summary)
-        print(format_metric_line("summary planner:", [("train_loss", cast(float, summary["train_loss"])), ("train_z", cast(float, summary["train_z"])), ("train_c5", cast(float, summary["train_c5"])), ("train_o5", cast(float, summary["train_o5"])), ("val_loss", cast(float, summary["val_loss"]))]))
+        print(format_metric_line("summary planner:", [("train_loss", cast(float, summary["train_loss"])), ("train_z", cast(float, summary["train_z"])), ("train_c5", cast(float, summary["train_c5"])), ("train_o5", cast(float, summary["train_o5"])), ("train_c10", cast(float, summary["train_c10"])), ("train_o10", cast(float, summary["train_o10"])), ("train_sig", cast(float, summary["train_signature"])), ("train_adj", cast(float, summary["train_adj"])), ("val_loss", cast(float, summary["val_loss"]))]))
         print(format_metric_line("summary seen  :", [("val_seen_loss", cast(float, summary["val_seen_loss"])), ("val_seen_z", cast(float, summary["val_seen_z"])), ("val_seen_c5", cast(float, summary["val_seen_c5"])), ("val_seen_o5", cast(float, summary["val_seen_o5"])), ("val_seen_count", cast(float, summary["val_seen_count"]))]))
         print(format_metric_line("summary unseen:", [("val_unseen_loss", cast(float, summary["val_unseen_loss"])), ("val_unseen_z", cast(float, summary["val_unseen_z"])), ("val_unseen_c5", cast(float, summary["val_unseen_c5"])), ("val_unseen_o5", cast(float, summary["val_unseen_o5"])), ("val_unseen_count", cast(float, summary["val_unseen_count"]))]))
         print(format_metric_line("zdiag train  :", [("entropy", cast(float, summary["train_z_entropy"])), ("top1", cast(float, summary["train_z_top1_prob"])), ("top5", cast(float, summary["train_z_top5_prob_sum"])), ("eff_modes", cast(float, summary["train_effective_num_modes"])), ("uniq_z", int(summary["train_sampled_unique_z_count"])), ("uniq_ratio", cast(float, summary["train_sampled_unique_z_ratio"]))]))
         print(format_metric_line("zdiag val    :", [("entropy", cast(float, summary["val_z_entropy"])), ("top1", cast(float, summary["val_z_top1_prob"])), ("top5", cast(float, summary["val_z_top5_prob_sum"])), ("eff_modes", cast(float, summary["val_effective_num_modes"])), ("uniq_z", int(summary["val_sampled_unique_z_count"])), ("uniq_ratio", cast(float, summary["val_sampled_unique_z_ratio"]))]))
+        print(format_metric_line("validity     :", [("train_valid_fg", cast(float, summary["train_pred_valid_fg_rate"])), ("train_all_bg", cast(float, summary["train_pred_all_background_rate"])), ("train_all_fg", cast(float, summary["train_pred_all_foreground_rate"])), ("val_valid_fg", cast(float, summary["val_pred_valid_fg_rate"])), ("val_all_bg", cast(float, summary["val_pred_all_background_rate"])), ("val_all_fg", cast(float, summary["val_pred_all_foreground_rate"]))]))
 
         if val_seen_total:
             current_metric_name = "val_seen_loss"
@@ -328,6 +500,9 @@ def main(argv: list[str] | None = None) -> int:
             "val_categories": val_categories,
             "unseen_val_categories": unseen_val_categories,
             "z_by_category": z_category_history,
+            "category_to_num_modes": train_loader.dataset.cache_meta.get("category_to_num_modes", {}),
+            "max_num_modes_per_category": int(planner_cf.get("max_num_modes_per_category", 16)),
+            "descriptor_slices": train_loader.dataset.cache_meta.get("descriptor_slices", {}),
             "config": config,
         }
         checkpoint_payload = {

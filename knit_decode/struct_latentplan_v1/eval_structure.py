@@ -28,6 +28,9 @@ def main(argv: list[str] | None = None) -> int:
     payload = json.loads(source_path.read_text(encoding="utf-8"))
     samples = payload["ranked"] if "ranked" in payload else payload["samples"]
     all_background_rate = _mean([float(sample.get("all_background_penalty", 0.0)) for sample in samples])
+    all_foreground_rate = _mean([float(sample.get("all_foreground_penalty", sample.get("all_foreground", 0.0))) for sample in samples])
+    valid_plan_rate = _mean([1.0 if bool(sample.get("is_valid_plan", False)) else 0.0 for sample in samples])
+    fg_ratio_out_of_range_rate = _mean([float(sample.get("fg_ratio_out_of_range_penalty", 0.0)) for sample in samples])
     mean_fg_ratio = _mean([float(sample.get("fg_ratio", 0.0)) for sample in samples])
     mean_components = _mean([float(sample.get("connected_components", 0.0)) for sample in samples])
     mean_largest_component_ratio = _mean([float(sample.get("largest_component_ratio", 0.0)) for sample in samples])
@@ -41,8 +44,19 @@ def main(argv: list[str] | None = None) -> int:
     topk = _mean(rerank_scores[: min(8, len(rerank_scores))]) if rerank_scores else 0.0
     result = {
         "all_background_rate": all_background_rate,
+        "all_foreground_rate": all_foreground_rate,
+        "valid_plan_rate": valid_plan_rate,
+        "fg_ratio_out_of_range_rate": fg_ratio_out_of_range_rate,
         "mean_fg_ratio": mean_fg_ratio,
         "fg_ratio_distribution": [float(sample.get("fg_ratio", 0.0)) for sample in samples],
+        "mean_fg_ratio_by_category": {
+            category: _mean([float(sample.get("fg_ratio", 0.0)) for sample in samples if sample.get("category") == category])
+            for category in sorted({str(sample.get("category")) for sample in samples})
+        },
+        "valid_plan_rate_by_category": {
+            category: _mean([1.0 if bool(sample.get("is_valid_plan", False)) else 0.0 for sample in samples if sample.get("category") == category])
+            for category in sorted({str(sample.get("category")) for sample in samples})
+        },
         "mean_connected_components": mean_components,
         "mean_largest_component_ratio": mean_largest_component_ratio,
         "tiny_island_count": tiny_island_count,

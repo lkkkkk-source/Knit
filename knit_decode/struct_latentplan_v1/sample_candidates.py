@@ -84,6 +84,38 @@ def _iterative_refine(refiner: object, category_ids: object, z_ids: object, c5: 
     return tokens, score_accum / float(max(1, steps)), conf_accum / float(max(1, steps))
 
 
+def _plan_validity(c5: list[list[int]], o5: list[list[int]], c10: list[list[int]], o10: list[list[int]], fg_ratio: float, fg_stats: dict[str, float] | None, occ_stats: dict[str, float] | None, background_class_id: int) -> tuple[bool, list[str], dict[str, float]]:
+    invalid: list[str] = []
+    o5_fg_cells = float(sum(int(value) for row in o5 for value in row))
+    o10_fg_cells = float(sum(int(value) for row in o10 for value in row))
+    all_background = fg_ratio <= 1e-6
+    all_foreground = fg_ratio >= 1.0 - 1e-6
+    if all_background:
+        invalid.append("all_background")
+    if all_foreground:
+        invalid.append("all_foreground")
+    if fg_stats is not None:
+        if fg_ratio < float(fg_stats["valid_low"]):
+            invalid.append("fg_ratio_low")
+        if fg_ratio > float(fg_stats["valid_high"]):
+            invalid.append("fg_ratio_high")
+    if occ_stats is not None:
+        if o5_fg_cells < float(occ_stats["valid_o5_min_cells"]):
+            invalid.append("o5_low")
+        if o5_fg_cells > float(occ_stats["valid_o5_max_cells"]):
+            invalid.append("o5_high")
+        if o10_fg_cells < float(occ_stats["valid_o10_min_cells"]):
+            invalid.append("o10_low")
+        if o10_fg_cells > float(occ_stats["valid_o10_max_cells"]):
+            invalid.append("o10_high")
+    return len(invalid) == 0, invalid, {
+        "o5_fg_cells": o5_fg_cells,
+        "o10_fg_cells": o10_fg_cells,
+        "all_background": 1.0 if all_background else 0.0,
+        "all_foreground": 1.0 if all_foreground else 0.0,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -126,6 +158,10 @@ def main(argv: list[str] | None = None) -> int:
         mode_embed_dim=int(planner_cf["mode_embed_dim"]),
         hidden_dim=int(planner_cf["hidden_dim"]),
         num_layers=int(planner_cf["num_layers"]),
+        coarse_size_10=10,
+        grammar_dim=17,
+        adjacency_dim=289,
+        max_num_modes_per_category=int(planner_metrics.get("max_num_modes_per_category", planner_cf.get("max_num_modes_per_category", 16))) if planner_metrics is not None else int(planner_cf.get("max_num_modes_per_category", 16)),
     )
     if planner_payload is not None:
         planner.load_state_dict(planner_payload["model_state_dict"])
@@ -153,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     category_ids = getattr(torch, "full")((num_candidates,), int(category_to_id[args.category]), device=device, dtype=getattr(torch, "long"))
     with getattr(torch, "no_grad")():
         planner_outputs = planner(
-            category_ids,
+            getattr(torch, "full")((int(sampling_cf.get("planner_oversample", num_candidates)),), int(category_to_id[args.category]), device=device, dtype=getattr(torch, "long")),
             z_ids=None,
             sample_mode="sample",
             z_temperature=float(sampling_cf["z_temperature"]),
@@ -161,27 +197,65 @@ def main(argv: list[str] | None = None) -> int:
         )
         c5 = planner_outputs["c5_logits"].argmax(dim=1)
         o5 = getattr(torch, "sigmoid")(planner_outputs["o5_logits"].squeeze(1)) >= 0.5
+        c10 = planner_outputs["c10_logits"].argmax(dim=1)
+        o10 = getattr(torch, "sigmoid")(planner_outputs["o10_logits"].squeeze(1)) >= 0.5
         r17 = planner_outputs["r17_pred"]
         fg_ratio = planner_outputs["fg_ratio_pred"]
+        planner_category_ids = getattr(torch, "full")((int(sampling_cf.get("planner_oversample", num_candidates)),), int(category_to_id[args.category]), device=device, dtype=getattr(torch, "long"))
+        planner_metrics = planner_payload["metrics"] if planner_payload is not None else {"category_fg_stats": {}, "category_occ_stats": {}}
+        fg_stats = planner_metrics.get("category_fg_stats", {}).get(args.category)
+        occ_stats = planner_metrics.get("category_occ_stats", {}).get(args.category)
+        plan_rows = []
+        for index in range(int(planner_category_ids.shape[0])):
+            c5_list = c5[index].detach().cpu().tolist()
+            o5_list = [[int(value) for value in row] for row in o5[index].detach().cpu().tolist()]
+            c10_list = c10[index].detach().cpu().tolist()
+            o10_list = [[int(value) for value in row] for row in o10[index].detach().cpu().tolist()]
+            valid, reasons, extra = _plan_validity(c5_list, o5_list, c10_list, o10_list, float(fg_ratio[index].item()), fg_stats, occ_stats, int(data_cf["background_class_id"]))
+            plan_rows.append({
+                "planner_index": index,
+                "category": args.category,
+                "z_id": int(planner_outputs["z_ids"][index].item()),
+                "planner_score": float(planner_outputs["z_logprob"][index].item()),
+                "fg_ratio": float(fg_ratio[index].item()),
+                "c5": c5_list,
+                "o5": o5_list,
+                "c10": c10_list,
+                "o10": o10_list,
+                "is_valid_plan": valid,
+                "invalid_reasons": reasons,
+                **extra,
+            })
+        valid_plans = [row for row in plan_rows if row["is_valid_plan"]]
+        if len(valid_plans) < int(sampling_cf.get("num_valid_plans", num_candidates)):
+            print(f"warning: valid plan rate is low ({len(valid_plans)}/{len(plan_rows)})")
+        selected = valid_plans[: int(sampling_cf.get("num_valid_plans", num_candidates))]
+        if len(selected) < num_candidates:
+            invalid_sorted = sorted([row for row in plan_rows if not row["is_valid_plan"]], key=lambda row: row["planner_score"], reverse=True)
+            selected.extend(invalid_sorted[: num_candidates - len(selected)])
+        selected = selected[:num_candidates]
+        selected_indices = [row["planner_index"] for row in selected]
+        selected_index_tensor = getattr(torch, "tensor")(selected_indices, dtype=getattr(torch, "long"), device=device)
         y20, refiner_score, mean_confidence = _iterative_refine(
             refiner,
-            category_ids=category_ids,
-            z_ids=planner_outputs["z_ids"],
-            c5=c5,
-            o5=o5.to(dtype=getattr(torch, "float32")),
-            r17=r17,
-            fg_ratio=fg_ratio,
+            category_ids=planner_category_ids.index_select(0, selected_index_tensor),
+            z_ids=planner_outputs["z_ids"].index_select(0, selected_index_tensor),
+            c5=c5.index_select(0, selected_index_tensor),
+            o5=o5.to(dtype=getattr(torch, "float32")).index_select(0, selected_index_tensor),
+            r17=r17.index_select(0, selected_index_tensor),
+            fg_ratio=fg_ratio.index_select(0, selected_index_tensor),
             steps=int(sampling_cf["refinement_steps"]),
             sample_temperature=float(config["train_refiner"]["sample_choice_temperature"]),
         )
 
     rows: list[dict[str, object]] = []
     for index in range(num_candidates):
+        plan_row = selected[index]
         sample_dir = output_dir / f"candidate_{index:03d}"
         sample_dir.mkdir(parents=True, exist_ok=True)
         y20_list = y20[index].detach().cpu().tolist()
-        c5_list = c5[index].detach().cpu().tolist()
-        o5_list = [[int(value) for value in row] for row in o5[index].detach().cpu().tolist()]
+        c5_list = plan_row["c5"]
+        o5_list = plan_row["o5"]
         save_label_map(y20_list, sample_dir / "y20.png", scale=12)
         save_label_map(c5_list, sample_dir / "c5.png", scale=32)
         save_binary_map(o5_list, sample_dir / "o5.png", scale=32)
@@ -189,17 +263,25 @@ def main(argv: list[str] | None = None) -> int:
         row = {
             "candidate_id": index,
             "category": args.category,
-            "z_id": int(planner_outputs["z_ids"][index].item()),
-            "planner_score": float(planner_outputs["z_logprob"][index].item()),
+            "z_id": int(plan_row["z_id"]),
+            "planner_score": float(plan_row["planner_score"]),
             "refiner_score": float(refiner_score[index].item()),
             "mean_confidence": float(mean_confidence[index].item()),
-            "fg_ratio": float(fg_ratio[index].item()),
-            "r17": [float(value) for value in r17[index].detach().cpu().tolist()],
+            "fg_ratio": float(plan_row["fg_ratio"]),
+            "r17": [float(value) for value in r17[selected_indices[index]].detach().cpu().tolist()],
+            "is_valid_plan": bool(plan_row["is_valid_plan"]),
+            "invalid_reasons": list(plan_row["invalid_reasons"]),
+            "o5_fg_cells": float(plan_row["o5_fg_cells"]),
+            "o10_fg_cells": float(plan_row["o10_fg_cells"]),
+            "all_background": float(plan_row["all_background"]),
+            "all_foreground": float(plan_row["all_foreground"]),
             **metrics,
             "sample_dir": str(sample_dir),
             "y20": y20_list,
             "c5": c5_list,
             "o5": o5_list,
+            "c10": plan_row["c10"],
+            "o10": plan_row["o10"],
         }
         (sample_dir / "meta.json").write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding="utf-8")
         rows.append(row)
@@ -208,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "category": args.category,
         "num_candidates": num_candidates,
+        "planner_oversample": int(sampling_cf.get("planner_oversample", num_candidates)),
+        "num_valid_plans": len(valid_plans),
+        "valid_plan_rate": len(valid_plans) / float(max(1, len(plan_rows))),
         "samples": rows,
     }
     (output_dir / "candidates.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")

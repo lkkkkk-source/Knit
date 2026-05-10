@@ -48,6 +48,9 @@ def _score_sample(sample: dict[str, object], lambdas: dict[str, float], backgrou
     o5 = sample["o5"]
     pred_fg = [[int(value) != background_class_id for value in row] for row in y20]
     all_background_penalty = 1.0 if not any(any(row) for row in pred_fg) else 0.0
+    all_foreground_penalty = float(sample.get("all_foreground", 0.0))
+    fg_ratio_out_of_range_penalty = 1.0 if ("fg_ratio_low" in sample.get("invalid_reasons", []) or "fg_ratio_high" in sample.get("invalid_reasons", [])) else 0.0
+    occupancy_out_of_range_penalty = 1.0 if any(reason in sample.get("invalid_reasons", []) for reason in ("o5_low", "o5_high", "o10_low", "o10_high")) else 0.0
     disconnected_penalty = max(0.0, float(sample.get("connected_components", 0.0)) - 1.0)
     tiny_island_penalty = count_tiny_islands(pred_fg, max_area=int(lambdas.get("tiny_island_threshold", 2))) / 20.0
     coarse_occ_violation, coarse_label_violation = _coarse_violations(y20, c5, o5, background_class_id=background_class_id)
@@ -59,8 +62,14 @@ def _score_sample(sample: dict[str, object], lambdas: dict[str, float], backgrou
         - lambdas["lambda_island"] * tiny_island_penalty
         - lambdas["lambda_plan"] * (coarse_occ_violation + coarse_label_violation)
         - 2.0 * all_background_penalty
+        - 2.0 * all_foreground_penalty
+        - 1.0 * fg_ratio_out_of_range_penalty
+        - 1.0 * occupancy_out_of_range_penalty
     )
     sample["all_background_penalty"] = all_background_penalty
+    sample["all_foreground_penalty"] = all_foreground_penalty
+    sample["fg_ratio_out_of_range_penalty"] = fg_ratio_out_of_range_penalty
+    sample["occupancy_out_of_range_penalty"] = occupancy_out_of_range_penalty
     sample["disconnected_penalty"] = disconnected_penalty
     sample["tiny_island_penalty"] = tiny_island_penalty
     sample["coarse_occupancy_violation"] = coarse_occ_violation
