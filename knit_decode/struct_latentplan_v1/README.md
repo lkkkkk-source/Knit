@@ -62,14 +62,15 @@ Early success criteria:
 ## Minimal Commands
 
 ```bash
-python -m knit_decode.struct_latentplan_v1.build_plan_cache --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml
-python -m knit_decode.struct_latentplan_v1.build_plan_cache --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --manifest outputs/manifests/inverse_rendering_val.jsonl
+python -m knit_decode.struct_latentplan_v1.build_plan_cache --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --manifest outputs/manifests/inverse_rendering_train.jsonl --fit-kmeans
+python -m knit_decode.struct_latentplan_v1.build_plan_cache --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --manifest outputs/manifests/inverse_rendering_val.jsonl --kmeans-source-cache knit_decode/struct_latentplan_v1/cache/latentplan_v1_5x5_k128/inverse_rendering_train.pt
 python -m knit_decode.struct_latentplan_v1.train_planner --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml
 python -m knit_decode.struct_latentplan_v1.train_refiner --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml
 python -m knit_decode.struct_latentplan_v1.sample_candidates --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --category Cable1 --num-candidates 64
 python -m knit_decode.struct_latentplan_v1.sample_candidates --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --category Cable1 --num-candidates 4 --allow-random-init-for-smoke-test --out-dir /tmp/latentplan_smoke/Cable1
 python -m knit_decode.struct_latentplan_v1.rerank_candidates --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --samples-dir struct_latentplan_v1/runs/refiner_latentplan_v1_5x5_k128/samples/Cable1
 python -m knit_decode.struct_latentplan_v1.eval_structure --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --samples-dir struct_latentplan_v1/runs/refiner_latentplan_v1_5x5_k128/samples/Cable1
+python -m knit_decode.struct_latentplan_v1.inspect_planner --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --planner-checkpoint struct_latentplan_v1/runs/planner_latentplan_v1_5x5_k128/checkpoint.pt --category Cable1 --num-samples 8
 ```
 
 ## Notes
