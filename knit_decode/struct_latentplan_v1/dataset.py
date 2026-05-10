@@ -60,6 +60,44 @@ class LatentPlanDataset:
         self.category_to_id = category_to_id or {category: index for index, category in enumerate(categories)}
         self.num_classes = int(self.cache_meta.get("num_classes", 17))
         self.palette_path = str(palette_path) if palette_path is not None else None
+        self._validate_alignment()
+
+    def _validate_alignment(self) -> None:
+        manifest_ids = {sample["sample_id"] for sample in self.samples}
+        cache_ids = set(self.cache_by_id)
+        missing_cache_ids = sorted(manifest_ids - cache_ids)
+        extra_cache_ids = sorted(cache_ids - manifest_ids)
+        if missing_cache_ids:
+            preview = missing_cache_ids[:8]
+            raise KeyError(
+                f"Plan cache is missing sample ids for manifest={self.manifest_path}: {preview} "
+                f"(missing={len(missing_cache_ids)})"
+            )
+        if extra_cache_ids:
+            preview = extra_cache_ids[:8]
+            raise ValueError(
+                f"Plan cache contains sample ids not present in manifest={self.manifest_path}: {preview} "
+                f"(extra={len(extra_cache_ids)})"
+            )
+        if len(self.samples) != len(self.cache_by_id):
+            raise ValueError(
+                f"Manifest/cache length mismatch for {self.manifest_path}: "
+                f"manifest_rows={len(self.samples)} cache_rows={len(self.cache_by_id)}"
+            )
+        for sample in self.samples:
+            cached = self.cache_by_id[sample["sample_id"]]
+            if str(cached.get("category")) != str(sample["category"]):
+                raise ValueError(
+                    f"Category mismatch for sample_id={sample['sample_id']!r}: "
+                    f"manifest={sample['category']!r} cache={cached.get('category')!r}"
+                )
+            for key in ("input_path", "target_path", "index_path"):
+                cached_value = cached.get(key)
+                if cached_value is not None and str(cached_value) != str(sample[key]):
+                    raise ValueError(
+                        f"Path mismatch for sample_id={sample['sample_id']!r}, field={key!r}: "
+                        f"manifest={sample[key]!r} cache={cached_value!r}"
+                    )
 
     def __len__(self) -> int:
         return len(self.samples)
