@@ -47,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--loss-weight-5", type=float, default=0.5)
     parser.add_argument("--loss-weight-10", type=float, default=0.75)
     parser.add_argument("--loss-weight-20", type=float, default=1.0)
+    parser.add_argument("--count-weight", type=float, default=0.1)
+    parser.add_argument("--mask-weight", type=float, default=0.1)
+    parser.add_argument("--background-class-id", type=int, default=0)
     parser.add_argument("--sample-temperature", type=float, default=1.0)
     parser.add_argument("--num-vis", type=int, default=16)
     return parser
@@ -90,6 +93,25 @@ def _save_label_map(mask: list[list[int]], output_path: Path) -> None:
     palette.extend([0] * (768 - len(palette)))
     image.putpalette(palette)
     image.save(output_path)
+
+
+def _count_ratio_loss(logits: object, count_vectors: object) -> object:
+    functional = __import__("importlib").import_module("torch.nn.functional")
+    probs = functional.softmax(logits, dim=1)
+    pred_counts = probs.sum(dim=(2, 3))
+    gt_counts = count_vectors.to(dtype=pred_counts.dtype)
+    pred_ratio = pred_counts / pred_counts.sum(dim=1, keepdim=True).clamp_min(1e-6)
+    gt_ratio = gt_counts / gt_counts.sum(dim=1, keepdim=True).clamp_min(1e-6)
+    return functional.smooth_l1_loss(pred_ratio, gt_ratio)
+
+
+def _foreground_mask_loss(logits: object, grid20: object, background_class_id: int) -> object:
+    functional = __import__("importlib").import_module("torch.nn.functional")
+    probs = functional.softmax(logits, dim=1)
+    bg = probs[:, background_class_id]
+    fg = 1.0 - bg
+    target = (grid20 != background_class_id).to(dtype=fg.dtype)
+    return functional.binary_cross_entropy(fg.clamp(1e-6, 1.0 - 1e-6), target)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -158,19 +180,31 @@ def main(argv: list[str] | None = None) -> int:
         total_ce10 = 0.0
         total_ce20 = 0.0
         total_syntax = 0.0
+        total_count = 0.0
+        total_mask = 0.0
         batch_count = 0
         for batch in train_loader:
             category_ids = batch["category_ids"].to(device)
             grid5 = batch["grid5"].to(device)
             grid10 = batch["grid10"].to(device)
             grid20 = batch["grid20"].to(device)
+            count_vectors = batch["count_vectors"].to(device)
             with _autocast_context(torch, use_amp):
                 outputs = model(category_ids, grid5, grid10, grid20)
                 ce5 = weighted_cross_entropy(outputs["logits5"], grid5, weight=class_weights)
                 ce10 = weighted_cross_entropy(outputs["logits10"], grid10, weight=class_weights)
                 ce20 = weighted_cross_entropy(outputs["logits20"], grid20, weight=class_weights)
                 syn = syntax_loss(outputs["logits20"], syntax_penalties) if args.syntax_weight > 0 else getattr(torch, "tensor")(0.0, device=device)
-                loss = args.loss_weight_5 * ce5 + args.loss_weight_10 * ce10 + args.loss_weight_20 * ce20 + args.syntax_weight * syn
+                count_loss = _count_ratio_loss(outputs["logits20"], count_vectors) if args.count_weight > 0 else getattr(torch, "tensor")(0.0, device=device)
+                mask_loss = _foreground_mask_loss(outputs["logits20"], grid20, args.background_class_id) if args.mask_weight > 0 else getattr(torch, "tensor")(0.0, device=device)
+                loss = (
+                    args.loss_weight_5 * ce5
+                    + args.loss_weight_10 * ce10
+                    + args.loss_weight_20 * ce20
+                    + args.syntax_weight * syn
+                    + args.count_weight * count_loss
+                    + args.mask_weight * mask_loss
+                )
             optimizer.zero_grad()
             if use_amp:
                 scaler.scale(loss).backward()
@@ -184,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
             total_ce10 += float(ce10.item())
             total_ce20 += float(ce20.item())
             total_syntax += float(syn.item()) if hasattr(syn, "item") else 0.0
+            total_count += float(count_loss.item()) if hasattr(count_loss, "item") else 0.0
+            total_mask += float(mask_loss.item()) if hasattr(mask_loss, "item") else 0.0
             batch_count += 1
             _print_progress(
                 "train",
@@ -194,7 +230,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"ce5={total_ce5 / batch_count:.6f} "
                     f"ce10={total_ce10 / batch_count:.6f} "
                     f"ce20={total_ce20 / batch_count:.6f} "
-                    f"syntax={total_syntax / batch_count:.6f}"
+                    f"syntax={total_syntax / batch_count:.6f} "
+                    f"count={total_count / batch_count:.6f} "
+                    f"mask={total_mask / batch_count:.6f}"
                 ),
             )
         _finish_progress()
@@ -206,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
             "train_ce10": total_ce10 / max(1, batch_count),
             "train_ce20": total_ce20 / max(1, batch_count),
             "train_syntax": total_syntax / max(1, batch_count),
+            "train_count": total_count / max(1, batch_count),
+            "train_mask": total_mask / max(1, batch_count),
         }
 
         if val_loader is not None:
@@ -277,6 +317,9 @@ def main(argv: list[str] | None = None) -> int:
         "loss_weight_5": args.loss_weight_5,
         "loss_weight_10": args.loss_weight_10,
         "loss_weight_20": args.loss_weight_20,
+        "count_weight": args.count_weight,
+        "mask_weight": args.mask_weight,
+        "background_class_id": args.background_class_id,
         "sample_temperature": args.sample_temperature,
         "history": history,
     }
