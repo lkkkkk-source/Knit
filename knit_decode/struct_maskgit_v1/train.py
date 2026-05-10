@@ -207,10 +207,11 @@ def _weighted_smoothed_cross_entropy(
 def _foreground_occupancy_loss(logits: object, grid20: object, background_class_id: int, dice_weight: float) -> tuple[object, object]:
     torch, _ = _require_torch()
     functional = __import__("importlib").import_module("torch.nn.functional")
-    probs = functional.softmax(logits, dim=1)
-    fg_prob = 1.0 - probs[:, background_class_id]
+    bg_logits = logits[:, background_class_id]
+    fg_logits = -bg_logits
+    fg_prob = getattr(torch, "sigmoid")(fg_logits)
     fg_target = (grid20 != background_class_id).to(dtype=fg_prob.dtype)
-    bce = functional.binary_cross_entropy(fg_prob.clamp(1e-6, 1.0 - 1e-6), fg_target)
+    bce = functional.binary_cross_entropy_with_logits(fg_logits, fg_target)
     intersection = (fg_prob * fg_target).sum(dim=(1, 2))
     denom = fg_prob.sum(dim=(1, 2)) + fg_target.sum(dim=(1, 2))
     dice = 1.0 - ((2.0 * intersection + 1e-6) / (denom + 1e-6))
