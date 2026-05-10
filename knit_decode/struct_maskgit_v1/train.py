@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label-smoothing", type=float, default=0.1)
     parser.add_argument("--mask-scheduling-method", type=str, default="cosine")
     parser.add_argument("--min-masking-rate", type=float, default=0.5)
+    parser.add_argument("--fg-occ-weight", type=float, default=1.0)
+    parser.add_argument("--fg-class-weight", type=float, default=1.0)
+    parser.add_argument("--all-ce-weight", type=float, default=0.25)
+    parser.add_argument("--fg-dice-weight", type=float, default=0.5)
+    parser.add_argument("--bg-loss-weight", type=float, default=0.25)
     parser.add_argument("--syntax-weight", type=float, default=0.0)
     parser.add_argument("--count-weight", type=float, default=0.0)
     parser.add_argument("--mask-weight", type=float, default=0.0)
@@ -160,6 +165,89 @@ def _smoothed_cross_entropy(
         token_loss = token_loss * token_weight
         return token_loss.sum() / token_weight.sum().clamp_min(1e-6)
     return token_loss.mean()
+
+
+def _weighted_smoothed_cross_entropy(
+    logits: object,
+    targets: object,
+    mask: object,
+    label_smoothing: float,
+    compute_loss_for_all: bool,
+    background_class_id: int,
+    bg_loss_weight: float,
+    class_weights: object | None,
+) -> object:
+    torch, _ = _require_torch()
+    functional = __import__("importlib").import_module("torch.nn.functional")
+    num_classes = int(logits.shape[1])
+    logits_hw = logits.permute(0, 2, 3, 1).reshape(-1, num_classes)
+    targets_flat = targets.reshape(-1)
+    selected = getattr(torch, "ones_like")(targets_flat, dtype=getattr(torch, "bool")) if compute_loss_for_all else mask.reshape(-1)
+    selected_logits = logits_hw[selected]
+    selected_targets = targets_flat[selected]
+    if int(selected_targets.numel()) == 0:
+        return getattr(torch, "tensor")(0.0, device=logits.device)
+    log_probs = functional.log_softmax(selected_logits, dim=-1)
+    off_value = float(label_smoothing) / float(num_classes)
+    on_value = 1.0 - float(label_smoothing) + off_value
+    soft_targets = getattr(torch, "full_like")(selected_logits, off_value)
+    soft_targets.scatter_(1, selected_targets.unsqueeze(1), on_value)
+    token_loss = -(soft_targets * log_probs).sum(dim=-1)
+    sample_weights = getattr(torch, "ones_like")(token_loss)
+    sample_weights = getattr(torch, "where")(
+        selected_targets == int(background_class_id),
+        getattr(torch, "full_like")(sample_weights, float(bg_loss_weight)),
+        sample_weights,
+    )
+    if class_weights is not None:
+        sample_weights = sample_weights * class_weights.gather(0, selected_targets)
+    return (token_loss * sample_weights).sum() / sample_weights.sum().clamp_min(1e-6)
+
+
+def _foreground_occupancy_loss(logits: object, grid20: object, background_class_id: int, dice_weight: float) -> tuple[object, object]:
+    torch, _ = _require_torch()
+    functional = __import__("importlib").import_module("torch.nn.functional")
+    probs = functional.softmax(logits, dim=1)
+    fg_prob = 1.0 - probs[:, background_class_id]
+    fg_target = (grid20 != background_class_id).to(dtype=fg_prob.dtype)
+    bce = functional.binary_cross_entropy(fg_prob.clamp(1e-6, 1.0 - 1e-6), fg_target)
+    intersection = (fg_prob * fg_target).sum(dim=(1, 2))
+    denom = fg_prob.sum(dim=(1, 2)) + fg_target.sum(dim=(1, 2))
+    dice = 1.0 - ((2.0 * intersection + 1e-6) / (denom + 1e-6))
+    dice_loss = dice.mean()
+    return bce + float(dice_weight) * dice_loss, dice_loss
+
+
+def _foreground_class_loss(
+    logits: object,
+    grid20: object,
+    mask20: object,
+    label_smoothing: float,
+    compute_loss_for_all: bool,
+    background_class_id: int,
+) -> object:
+    torch, _ = _require_torch()
+    functional = __import__("importlib").import_module("torch.nn.functional")
+    fg_targets = grid20 != background_class_id
+    selected = fg_targets if compute_loss_for_all else (fg_targets & mask20)
+    if int(selected.sum().item()) == 0:
+        return getattr(torch, "tensor")(0.0, device=logits.device)
+    keep_class_ids = [index for index in range(int(logits.shape[1])) if index != int(background_class_id)]
+    class_index = getattr(torch, "tensor")(keep_class_ids, device=logits.device, dtype=getattr(torch, "long"))
+    fg_logits = logits.index_select(1, class_index).permute(0, 2, 3, 1).reshape(-1, len(keep_class_ids))
+    fg_targets_full = grid20.reshape(-1)
+    selected_flat = selected.reshape(-1)
+    fg_logits = fg_logits[selected_flat]
+    fg_targets_full = fg_targets_full[selected_flat]
+    adjusted_targets = fg_targets_full.clone()
+    adjusted_targets = getattr(torch, "where")(adjusted_targets > background_class_id, adjusted_targets - 1, adjusted_targets)
+    num_classes = int(fg_logits.shape[-1])
+    log_probs = functional.log_softmax(fg_logits, dim=-1)
+    off_value = float(label_smoothing) / float(num_classes)
+    on_value = 1.0 - float(label_smoothing) + off_value
+    soft_targets = getattr(torch, "full_like")(fg_logits, off_value)
+    soft_targets.scatter_(1, adjusted_targets.unsqueeze(1), on_value)
+    return -(soft_targets * log_probs).sum(dim=-1).mean()
 
 
 def _count_ratio_loss(logits: object, count_vectors: object) -> object:
@@ -324,6 +412,10 @@ def main(argv: list[str] | None = None) -> int:
         total_ce5 = 0.0
         total_ce10 = 0.0
         total_ce20 = 0.0
+        total_fg_occ = 0.0
+        total_fg_dice = 0.0
+        total_fg_class = 0.0
+        total_all_ce = 0.0
         total_syntax = 0.0
         total_count = 0.0
         total_mask = 0.0
@@ -341,7 +433,30 @@ def main(argv: list[str] | None = None) -> int:
                 outputs = model(category_ids, grid5, grid10, grid20, mask5, mask10, mask20)
                 ce5 = _smoothed_cross_entropy(outputs["logits5"], grid5, mask5, args.label_smoothing, bool(args.compute_loss_for_all), class_weights)
                 ce10 = _smoothed_cross_entropy(outputs["logits10"], grid10, mask10, args.label_smoothing, bool(args.compute_loss_for_all), class_weights)
-                ce20 = _smoothed_cross_entropy(outputs["logits20"], grid20, mask20, args.label_smoothing, bool(args.compute_loss_for_all), class_weights)
+                all_ce20 = _weighted_smoothed_cross_entropy(
+                    outputs["logits20"],
+                    grid20,
+                    mask20,
+                    args.label_smoothing,
+                    bool(args.compute_loss_for_all),
+                    args.background_class_id,
+                    args.bg_loss_weight,
+                    class_weights,
+                )
+                fg_occ, fg_dice = _foreground_occupancy_loss(outputs["logits20"], grid20, args.background_class_id, args.fg_dice_weight)
+                fg_class = _foreground_class_loss(
+                    outputs["logits20"],
+                    grid20,
+                    mask20,
+                    args.label_smoothing,
+                    bool(args.compute_loss_for_all),
+                    args.background_class_id,
+                )
+                ce20 = (
+                    args.fg_occ_weight * fg_occ
+                    + args.fg_class_weight * fg_class
+                    + args.all_ce_weight * all_ce20
+                )
                 syn = syntax_loss(outputs["logits20"], syntax_penalties) if args.syntax_weight > 0 else getattr(torch, "tensor")(0.0, device=device)
                 count_loss = _count_ratio_loss(outputs["logits20"], count_vectors) if args.count_weight > 0 else getattr(torch, "tensor")(0.0, device=device)
                 mask_loss = _foreground_mask_loss(outputs["logits20"], grid20, args.background_class_id) if args.mask_weight > 0 else getattr(torch, "tensor")(0.0, device=device)
@@ -365,6 +480,10 @@ def main(argv: list[str] | None = None) -> int:
             total_ce5 += float(ce5.item())
             total_ce10 += float(ce10.item())
             total_ce20 += float(ce20.item())
+            total_fg_occ += float(fg_occ.item())
+            total_fg_dice += float(fg_dice.item())
+            total_fg_class += float(fg_class.item())
+            total_all_ce += float(all_ce20.item())
             total_syntax += float(syn.item()) if hasattr(syn, "item") else 0.0
             total_count += float(count_loss.item()) if hasattr(count_loss, "item") else 0.0
             total_mask += float(mask_loss.item()) if hasattr(mask_loss, "item") else 0.0
@@ -378,6 +497,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"ce5={total_ce5 / batch_count:.6f} "
                     f"ce10={total_ce10 / batch_count:.6f} "
                     f"ce20={total_ce20 / batch_count:.6f} "
+                    f"fg_occ={total_fg_occ / batch_count:.6f} "
+                    f"fg_cls={total_fg_class / batch_count:.6f} "
+                    f"all_ce={total_all_ce / batch_count:.6f} "
                     f"syntax={total_syntax / batch_count:.6f} "
                     f"count={total_count / batch_count:.6f} "
                     f"mask={total_mask / batch_count:.6f}"
@@ -391,6 +513,10 @@ def main(argv: list[str] | None = None) -> int:
             "train_ce5": total_ce5 / max(1, batch_count),
             "train_ce10": total_ce10 / max(1, batch_count),
             "train_ce20": total_ce20 / max(1, batch_count),
+            "train_fg_occ": total_fg_occ / max(1, batch_count),
+            "train_fg_dice": total_fg_dice / max(1, batch_count),
+            "train_fg_class": total_fg_class / max(1, batch_count),
+            "train_all_ce": total_all_ce / max(1, batch_count),
             "train_syntax": total_syntax / max(1, batch_count),
             "train_count": total_count / max(1, batch_count),
             "train_mask": total_mask / max(1, batch_count),
@@ -482,6 +608,11 @@ def main(argv: list[str] | None = None) -> int:
         "compute_loss_for_all": bool(args.compute_loss_for_all),
         "mask_scheduling_method": args.mask_scheduling_method,
         "min_masking_rate": args.min_masking_rate,
+        "fg_occ_weight": args.fg_occ_weight,
+        "fg_class_weight": args.fg_class_weight,
+        "all_ce_weight": args.all_ce_weight,
+        "fg_dice_weight": args.fg_dice_weight,
+        "bg_loss_weight": args.bg_loss_weight,
         "syntax_weight": args.syntax_weight,
         "count_weight": args.count_weight,
         "mask_weight": args.mask_weight,
