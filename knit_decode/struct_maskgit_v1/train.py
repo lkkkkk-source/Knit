@@ -94,6 +94,16 @@ def _finish_progress() -> None:
     print(flush=True)
 
 
+def _format_metric_line(prefix: str, items: list[tuple[str, object]]) -> str:
+    parts = [prefix]
+    for key, value in items:
+        if isinstance(value, float):
+            parts.append(f"{key}={value:.4f}")
+        else:
+            parts.append(f"{key}={value}")
+    return " ".join(parts)
+
+
 def _build_category_mapping(train_manifest: Path, val_manifest: Path | None) -> dict[str, int]:
     categories = {sample["category"] for sample in load_manifest(train_manifest)}
     if val_manifest is not None:
@@ -268,6 +278,64 @@ def _foreground_mask_loss(logits: object, grid20: object, background_class_id: i
     return functional.binary_cross_entropy_with_logits(fg_logit, target)
 
 
+def _largest_component_ratio(mask: list[list[bool]]) -> float:
+    height = len(mask)
+    width = len(mask[0]) if height else 0
+    total = sum(1 for row in mask for value in row if value)
+    if total <= 0:
+        return 0.0
+    visited = [[False for _ in range(width)] for _ in range(height)]
+    best = 0
+    for y_pos in range(height):
+        for x_pos in range(width):
+            if not mask[y_pos][x_pos] or visited[y_pos][x_pos]:
+                continue
+            stack = [(y_pos, x_pos)]
+            visited[y_pos][x_pos] = True
+            size = 0
+            while stack:
+                cur_y, cur_x = stack.pop()
+                size += 1
+                for next_y, next_x in ((cur_y - 1, cur_x), (cur_y + 1, cur_x), (cur_y, cur_x - 1), (cur_y, cur_x + 1)):
+                    if 0 <= next_y < height and 0 <= next_x < width and mask[next_y][next_x] and not visited[next_y][next_x]:
+                        visited[next_y][next_x] = True
+                        stack.append((next_y, next_x))
+            best = max(best, size)
+    return best / float(total)
+
+
+def _structure_metrics(pred_mask: list[list[int]], tgt_mask: list[list[int]], background_class_id: int, num_classes: int) -> dict[str, float]:
+    pred_fg = [[value != background_class_id for value in row] for row in pred_mask]
+    tgt_fg = [[value != background_class_id for value in row] for row in tgt_mask]
+    pred_fg_count = sum(1 for row in pred_fg for value in row if value)
+    tgt_fg_count = sum(1 for row in tgt_fg for value in row if value)
+    intersection = 0
+    union = 0
+    for y_pos in range(len(pred_mask)):
+        for x_pos in range(len(pred_mask[0])):
+            pred_value = pred_fg[y_pos][x_pos]
+            tgt_value = tgt_fg[y_pos][x_pos]
+            if pred_value and tgt_value:
+                intersection += 1
+            if pred_value or tgt_value:
+                union += 1
+    pred_counts = [0 for _ in range(num_classes)]
+    tgt_counts = [0 for _ in range(num_classes)]
+    for row in pred_mask:
+        for value in row:
+            pred_counts[int(value)] += 1
+    for row in tgt_mask:
+        for value in row:
+            tgt_counts[int(value)] += 1
+    count_l1 = sum(abs(pred_value - tgt_value) for pred_value, tgt_value in zip(pred_counts, tgt_counts)) / float(max(1, len(pred_mask) * len(pred_mask[0])))
+    return {
+        "foreground_iou": 0.0 if union <= 0 else intersection / float(union),
+        "foreground_ratio_error": abs(pred_fg_count - tgt_fg_count) / float(max(1, len(pred_mask) * len(pred_mask[0]))),
+        "class_count_l1": count_l1,
+        "largest_component_ratio": _largest_component_ratio(pred_fg),
+    }
+
+
 def _sample_stage(
     model: object,
     stage_name: str,
@@ -407,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
 
     history: list[dict[str, object]] = []
     for epoch in range(args.epochs):
-        print(f"epoch {epoch + 1}/{args.epochs}")
+        print(f"\nepoch {epoch + 1}/{args.epochs}")
         model.train()
         total_loss = 0.0
         total_ce5 = 0.0
@@ -494,16 +562,13 @@ def main(argv: list[str] | None = None) -> int:
                 batch_count,
                 len(train_loader),
                 (
-                    f"loss={total_loss / batch_count:.6f} "
-                    f"ce5={total_ce5 / batch_count:.6f} "
-                    f"ce10={total_ce10 / batch_count:.6f} "
-                    f"ce20={total_ce20 / batch_count:.6f} "
-                    f"fg_occ={total_fg_occ / batch_count:.6f} "
-                    f"fg_cls={total_fg_class / batch_count:.6f} "
-                    f"all_ce={total_all_ce / batch_count:.6f} "
-                    f"syntax={total_syntax / batch_count:.6f} "
-                    f"count={total_count / batch_count:.6f} "
-                    f"mask={total_mask / batch_count:.6f}"
+                    f"loss={total_loss / batch_count:.4f} "
+                    f"s5={total_ce5 / batch_count:.4f} "
+                    f"s10={total_ce10 / batch_count:.4f} "
+                    f"s20={total_ce20 / batch_count:.4f} "
+                    f"fg_occ={total_fg_occ / batch_count:.4f} "
+                    f"fg_cls={total_fg_class / batch_count:.4f} "
+                    f"all_ce={total_all_ce / batch_count:.4f}"
                 ),
             )
         _finish_progress()
@@ -529,8 +594,11 @@ def main(argv: list[str] | None = None) -> int:
             vis_dir = args.output_dir / "val_predictions" / f"epoch_{epoch + 1:03d}"
             vis_dir.mkdir(parents=True, exist_ok=True)
             vis_written = 0
-            val_exact = 0
             val_samples = 0
+            val_fg_iou = 0.0
+            val_fg_ratio_error = 0.0
+            val_count_l1 = 0.0
+            val_largest_component_ratio = 0.0
             with getattr(torch, "no_grad")():
                 val_batches = 0
                 for batch in val_loader:
@@ -539,13 +607,16 @@ def main(argv: list[str] | None = None) -> int:
                     sample_ids = [str(value) for value in batch["sample_ids"]]
                     sampled = _sample_multiscale(model, category_ids, args)
                     pred20 = sampled["pred20"]
-                    exact_matches = pred20.eq(grid20).reshape(pred20.shape[0], -1).all(dim=1)
-                    val_exact += int(exact_matches.sum().item())
-                    val_samples += int(pred20.shape[0])
                     predictions = pred20.detach().cpu().tolist()
                     targets = grid20.detach().cpu().tolist()
                     for sample_index, pred_mask in enumerate(predictions):
                         tgt_mask = targets[sample_index]
+                        structure = _structure_metrics(pred_mask, tgt_mask, args.background_class_id, NUM_CLASSES)
+                        val_fg_iou += structure["foreground_iou"]
+                        val_fg_ratio_error += structure["foreground_ratio_error"]
+                        val_count_l1 += structure["class_count_l1"]
+                        val_largest_component_ratio += structure["largest_component_ratio"]
+                        val_samples += 1
                         for row_index, row in enumerate(tgt_mask):
                             for col_index, actual in enumerate(row):
                                 val_confusion[actual][pred_mask[row_index][col_index]] += 1
@@ -561,22 +632,62 @@ def main(argv: list[str] | None = None) -> int:
                         "val",
                         val_batches,
                         len(val_loader),
-                        f"pixacc={cast(float, metrics['pixel_accuracy']):.6f} miou={cast(float, metrics['mean_iou']):.6f}",
+                        (
+                            f"pixacc={cast(float, metrics['pixel_accuracy']):.4f} "
+                            f"miou={cast(float, metrics['mean_iou']):.4f}"
+                        ),
                     )
             _finish_progress()
             metrics = _compute_metrics(val_confusion)
             epoch_metrics["val_pixel_accuracy"] = metrics["pixel_accuracy"]
             epoch_metrics["val_mean_iou"] = metrics["mean_iou"]
             epoch_metrics["val_per_class_iou"] = metrics["per_class_iou"]
-            epoch_metrics["val_exact_match"] = val_exact / max(1, val_samples)
+            epoch_metrics["val_foreground_iou"] = val_fg_iou / max(1, val_samples)
+            epoch_metrics["val_foreground_ratio_error"] = val_fg_ratio_error / max(1, val_samples)
+            epoch_metrics["val_class_count_l1"] = val_count_l1 / max(1, val_samples)
+            epoch_metrics["val_largest_component_ratio"] = val_largest_component_ratio / max(1, val_samples)
             print(
-                f"epoch={epoch + 1} train_loss={cast(float, epoch_metrics['train_loss']):.6f} "
-                f"val_acc={cast(float, epoch_metrics['val_pixel_accuracy']):.4f} "
-                f"val_miou={cast(float, epoch_metrics['val_mean_iou']):.4f} "
-                f"val_exact={cast(float, epoch_metrics['val_exact_match']):.4f}"
+                _format_metric_line(
+                    "summary train:",
+                    [
+                        ("loss", cast(float, epoch_metrics["train_loss"])),
+                        ("s5", cast(float, epoch_metrics["train_ce5"])),
+                        ("s10", cast(float, epoch_metrics["train_ce10"])),
+                        ("s20", cast(float, epoch_metrics["train_ce20"])),
+                        ("fg_occ", cast(float, epoch_metrics["train_fg_occ"])),
+                        ("fg_cls", cast(float, epoch_metrics["train_fg_class"])),
+                        ("all_ce", cast(float, epoch_metrics["train_all_ce"])),
+                    ],
+                )
+            )
+            print(
+                _format_metric_line(
+                    "summary val  :",
+                    [
+                        ("pixacc", cast(float, epoch_metrics["val_pixel_accuracy"])),
+                        ("miou", cast(float, epoch_metrics["val_mean_iou"])),
+                        ("fg_iou", cast(float, epoch_metrics["val_foreground_iou"])),
+                        ("fg_ratio_err", cast(float, epoch_metrics["val_foreground_ratio_error"])),
+                        ("count_l1", cast(float, epoch_metrics["val_class_count_l1"])),
+                        ("largest_cc", cast(float, epoch_metrics["val_largest_component_ratio"])),
+                    ],
+                )
             )
         else:
-            print(f"epoch={epoch + 1} train_loss={cast(float, epoch_metrics['train_loss']):.6f}")
+            print(
+                _format_metric_line(
+                    "summary train:",
+                    [
+                        ("loss", cast(float, epoch_metrics["train_loss"])),
+                        ("s5", cast(float, epoch_metrics["train_ce5"])),
+                        ("s10", cast(float, epoch_metrics["train_ce10"])),
+                        ("s20", cast(float, epoch_metrics["train_ce20"])),
+                        ("fg_occ", cast(float, epoch_metrics["train_fg_occ"])),
+                        ("fg_cls", cast(float, epoch_metrics["train_fg_class"])),
+                        ("all_ce", cast(float, epoch_metrics["train_all_ce"])),
+                    ],
+                )
+            )
         history.append(epoch_metrics)
 
     model_config = {

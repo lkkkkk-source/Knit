@@ -42,6 +42,64 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _largest_component_ratio(mask: list[list[bool]]) -> float:
+    height = len(mask)
+    width = len(mask[0]) if height else 0
+    total = sum(1 for row in mask for value in row if value)
+    if total <= 0:
+        return 0.0
+    visited = [[False for _ in range(width)] for _ in range(height)]
+    best = 0
+    for y_pos in range(height):
+        for x_pos in range(width):
+            if not mask[y_pos][x_pos] or visited[y_pos][x_pos]:
+                continue
+            stack = [(y_pos, x_pos)]
+            visited[y_pos][x_pos] = True
+            size = 0
+            while stack:
+                cur_y, cur_x = stack.pop()
+                size += 1
+                for next_y, next_x in ((cur_y - 1, cur_x), (cur_y + 1, cur_x), (cur_y, cur_x - 1), (cur_y, cur_x + 1)):
+                    if 0 <= next_y < height and 0 <= next_x < width and mask[next_y][next_x] and not visited[next_y][next_x]:
+                        visited[next_y][next_x] = True
+                        stack.append((next_y, next_x))
+            best = max(best, size)
+    return best / float(total)
+
+
+def _structure_metrics(pred_mask: list[list[int]], tgt_mask: list[list[int]], background_class_id: int, num_classes: int) -> dict[str, float]:
+    pred_fg = [[value != background_class_id for value in row] for row in pred_mask]
+    tgt_fg = [[value != background_class_id for value in row] for row in tgt_mask]
+    pred_fg_count = sum(1 for row in pred_fg for value in row if value)
+    tgt_fg_count = sum(1 for row in tgt_fg for value in row if value)
+    intersection = 0
+    union = 0
+    for y_pos in range(len(pred_mask)):
+        for x_pos in range(len(pred_mask[0])):
+            pred_value = pred_fg[y_pos][x_pos]
+            tgt_value = tgt_fg[y_pos][x_pos]
+            if pred_value and tgt_value:
+                intersection += 1
+            if pred_value or tgt_value:
+                union += 1
+    pred_counts = [0 for _ in range(num_classes)]
+    tgt_counts = [0 for _ in range(num_classes)]
+    for row in pred_mask:
+        for value in row:
+            pred_counts[int(value)] += 1
+    for row in tgt_mask:
+        for value in row:
+            tgt_counts[int(value)] += 1
+    count_l1 = sum(abs(pred_value - tgt_value) for pred_value, tgt_value in zip(pred_counts, tgt_counts)) / float(max(1, len(pred_mask) * len(pred_mask[0])))
+    return {
+        "foreground_iou": 0.0 if union <= 0 else intersection / float(union),
+        "foreground_ratio_error": abs(pred_fg_count - tgt_fg_count) / float(max(1, len(pred_mask) * len(pred_mask[0]))),
+        "class_count_l1": count_l1,
+        "largest_component_ratio": _largest_component_ratio(pred_fg),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -95,8 +153,11 @@ def main(argv: list[str] | None = None) -> int:
         selected_ids = set(rng.sample(population, min(args.num_samples, len(population))))
 
     confusion = [[0 for _ in range(NUM_CLASSES)] for _ in range(NUM_CLASSES)]
-    exact_matches = 0
     total_samples = 0
+    total_fg_iou = 0.0
+    total_fg_ratio_error = 0.0
+    total_count_l1 = 0.0
+    total_largest_component_ratio = 0.0
     rows: list[dict[str, object]] = []
     with getattr(torch, "no_grad")():
         for batch in loader:
@@ -112,13 +173,16 @@ def main(argv: list[str] | None = None) -> int:
             categories = [str(batch["categories"][index]) for index in keep_indices]
             sampled = _sample_multiscale(model, category_ids, effective_args)
             pred20 = sampled["pred20"]
-            exact_tensor = pred20.eq(grid20).reshape(pred20.shape[0], -1).all(dim=1)
-            exact_matches += int(exact_tensor.sum().item())
-            total_samples += int(pred20.shape[0])
             pred_list = pred20.detach().cpu().tolist()
             tgt_list = grid20.detach().cpu().tolist()
             for sample_index, pred_mask in enumerate(pred_list):
                 target_mask = tgt_list[sample_index]
+                structure = _structure_metrics(pred_mask, target_mask, background_class_id=0, num_classes=NUM_CLASSES)
+                total_fg_iou += structure["foreground_iou"]
+                total_fg_ratio_error += structure["foreground_ratio_error"]
+                total_count_l1 += structure["class_count_l1"]
+                total_largest_component_ratio += structure["largest_component_ratio"]
+                total_samples += 1
                 sample_correct = 0
                 for row_index, row in enumerate(target_mask):
                     for col_index, actual in enumerate(row):
@@ -133,7 +197,10 @@ def main(argv: list[str] | None = None) -> int:
                     "sample_id": sample_ids[sample_index],
                     "category": categories[sample_index],
                     "pixel_accuracy": sample_correct / float(len(target_mask) * len(target_mask[0])),
-                    "exact_match": bool(exact_tensor[sample_index].item()),
+                    "foreground_iou": structure["foreground_iou"],
+                    "foreground_ratio_error": structure["foreground_ratio_error"],
+                    "class_count_l1": structure["class_count_l1"],
+                    "largest_component_ratio": structure["largest_component_ratio"],
                     "output_dir": str(sample_dir),
                 }
                 (sample_dir / "meta.json").write_text(json.dumps(sample_metrics, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -148,7 +215,10 @@ def main(argv: list[str] | None = None) -> int:
         "pixel_accuracy": summary["pixel_accuracy"],
         "mean_iou": summary["mean_iou"],
         "per_class_iou": summary["per_class_iou"],
-        "exact_match": exact_matches / max(1, total_samples),
+        "foreground_iou": total_fg_iou / max(1, total_samples),
+        "foreground_ratio_error": total_fg_ratio_error / max(1, total_samples),
+        "class_count_l1": total_count_l1 / max(1, total_samples),
+        "largest_component_ratio": total_largest_component_ratio / max(1, total_samples),
         "sample_choice_temperature": effective_args.sample_choice_temperature,
         "sample_steps_5": effective_args.sample_steps_5,
         "sample_steps_10": effective_args.sample_steps_10,
