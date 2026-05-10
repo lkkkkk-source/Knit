@@ -41,14 +41,21 @@ def official_palette_mapping() -> dict[str, int]:
     return {f"{r},{g},{b}": index + 1 for index, (r, g, b) in enumerate(OFFICIAL_PALETTE)}
 
 
+def _infer_manifest_root(manifest_path: Path, rows: list[dict[str, object]]) -> Path:
+    search_roots = [manifest_path.parent, *manifest_path.parents]
+    for candidate_root in search_roots:
+        if all((candidate_root / str(row["target_path"])).exists() for row in rows[: min(4, len(rows))]):
+            return candidate_root
+    raise FileNotFoundError(
+        f"Unable to resolve manifest root for {manifest_path}. "
+        "Checked manifest directory and its parents against target_path entries."
+    )
+
+
 def infer_palette_mapping(manifest_path: str | Path, output_path: str | Path | None = None) -> dict[str, int]:
     manifest_path = Path(manifest_path)
     rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    root = manifest_path.parent
-    if rows:
-        probe = root / rows[0]["target_path"]
-        if not probe.exists():
-            root = manifest_path.parent.parent
+    root = _infer_manifest_root(manifest_path, rows) if rows else manifest_path.parent
     color_set: set[RGB] = set()
 
     for row in rows:

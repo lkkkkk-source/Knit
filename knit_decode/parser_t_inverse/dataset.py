@@ -113,6 +113,17 @@ def load_index_counts(path: Path) -> dict[int, int]:
     return counts
 
 
+def _infer_manifest_root(manifest_path: Path, rows: list[ParserInverseSample]) -> Path:
+    search_roots = [manifest_path.parent, *manifest_path.parents]
+    for candidate_root in search_roots:
+        if all((candidate_root / row["target_path"]).exists() for row in rows[: min(4, len(rows))]):
+            return candidate_root
+    raise FileNotFoundError(
+        f"Unable to resolve manifest root for {manifest_path}. "
+        "Checked manifest directory and its parents against target_path entries."
+    )
+
+
 class ParserInverseDataset:
     def __init__(
         self,
@@ -129,14 +140,10 @@ class ParserInverseDataset:
 
     @staticmethod
     def _infer_root(manifest_path: Path) -> Path:
-        direct_root = manifest_path.parent
         rows = load_manifest(manifest_path)
         if not rows:
-            return direct_root
-        probe = direct_root / rows[0]["target_path"]
-        if probe.exists():
-            return direct_root
-        return manifest_path.parent.parent
+            return manifest_path.parent
+        return _infer_manifest_root(manifest_path, rows)
 
     def __len__(self) -> int:
         return len(self.samples)
