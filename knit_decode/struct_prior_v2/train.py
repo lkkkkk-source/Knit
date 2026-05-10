@@ -107,11 +107,9 @@ def _count_ratio_loss(logits: object, count_vectors: object) -> object:
 
 def _foreground_mask_loss(logits: object, grid20: object, background_class_id: int) -> object:
     functional = __import__("importlib").import_module("torch.nn.functional")
-    probs = functional.softmax(logits, dim=1)
-    bg = probs[:, background_class_id]
-    fg = 1.0 - bg
-    target = (grid20 != background_class_id).to(dtype=fg.dtype)
-    return functional.binary_cross_entropy(fg.clamp(1e-6, 1.0 - 1e-6), target)
+    fg_logit = -logits[:, background_class_id]
+    target = (grid20 != background_class_id).to(dtype=logits.dtype)
+    return functional.binary_cross_entropy_with_logits(fg_logit, target)
 
 
 def main(argv: list[str] | None = None) -> int:
