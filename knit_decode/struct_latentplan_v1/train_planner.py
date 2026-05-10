@@ -195,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     functional = __import__("importlib").import_module("torch.nn.functional")
     history: list[dict[str, object]] = []
     z_category_history: dict[str, dict[str, object]] = {}
+    best_metric_name = "val_seen_loss"
+    best_metric_value = float("inf")
     print(format_metric_line("categories:", [("num_categories", len(category_to_id)), ("train_categories", len(train_categories)), ("val_categories", len(val_categories)), ("unseen_val_categories", unseen_val_categories)]))
     for epoch in range(int(train_cf["epochs"])):
         print(f"\nepoch {epoch + 1}/{int(train_cf['epochs'])}")
@@ -310,6 +312,51 @@ def main(argv: list[str] | None = None) -> int:
         print(format_metric_line("zdiag train  :", [("entropy", cast(float, summary["train_z_entropy"])), ("top1", cast(float, summary["train_z_top1_prob"])), ("top5", cast(float, summary["train_z_top5_prob_sum"])), ("eff_modes", cast(float, summary["train_effective_num_modes"])), ("uniq_z", int(summary["train_sampled_unique_z_count"])), ("uniq_ratio", cast(float, summary["train_sampled_unique_z_ratio"]))]))
         print(format_metric_line("zdiag val    :", [("entropy", cast(float, summary["val_z_entropy"])), ("top1", cast(float, summary["val_z_top1_prob"])), ("top5", cast(float, summary["val_z_top5_prob_sum"])), ("eff_modes", cast(float, summary["val_effective_num_modes"])), ("uniq_z", int(summary["val_sampled_unique_z_count"])), ("uniq_ratio", cast(float, summary["val_sampled_unique_z_ratio"]))]))
 
+        if val_seen_total:
+            current_metric_name = "val_seen_loss"
+            current_metric_value = cast(float, summary["val_seen_loss"])
+        else:
+            current_metric_name = "val_loss"
+            current_metric_value = cast(float, summary["val_loss"])
+
+        metrics = {
+            "history": history,
+            "category_to_id": category_to_id,
+            "id_to_category": {index: category for category, index in category_to_id.items()},
+            "num_categories": len(category_to_id),
+            "train_categories": train_categories,
+            "val_categories": val_categories,
+            "unseen_val_categories": unseen_val_categories,
+            "z_by_category": z_category_history,
+            "config": config,
+        }
+        checkpoint_payload = {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "epoch": epoch + 1,
+            "config": config,
+            "metrics": metrics,
+            "category_to_id": category_to_id,
+            "id_to_category": {index: category for category, index in category_to_id.items()},
+            "num_categories": len(category_to_id),
+            "train_categories": train_categories,
+            "val_categories": val_categories,
+            "unseen_val_categories": unseen_val_categories,
+            "best_metric_name": current_metric_name if current_metric_value < best_metric_value else best_metric_name,
+            "best_metric_value": current_metric_value if current_metric_value < best_metric_value else best_metric_value,
+        }
+        last_path = output_dir / "checkpoint_last.pt"
+        getattr(torch, "save")(checkpoint_payload, last_path)
+        print(f"saved checkpoint_last: {last_path}")
+
+        if current_metric_value < best_metric_value:
+            best_metric_name = current_metric_name
+            best_metric_value = current_metric_value
+            checkpoint_payload["best_metric_name"] = best_metric_name
+            checkpoint_payload["best_metric_value"] = best_metric_value
+            best_path = output_dir / "checkpoint.pt"
+            getattr(torch, "save")(checkpoint_payload, best_path)
+            print(f"saved best checkpoint: {best_path}")
     metrics = {
         "history": history,
         "category_to_id": category_to_id,
@@ -320,10 +367,10 @@ def main(argv: list[str] | None = None) -> int:
         "unseen_val_categories": unseen_val_categories,
         "z_by_category": z_category_history,
         "config": config,
+        "best_metric_name": best_metric_name,
+        "best_metric_value": best_metric_value,
     }
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
-    getattr(torch, "save")({"model_state_dict": model.state_dict(), "metrics": metrics}, output_dir / "checkpoint.pt")
-    print(f"saved checkpoint: {output_dir / 'checkpoint.pt'}")
     return 0
 
 

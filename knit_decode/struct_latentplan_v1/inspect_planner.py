@@ -47,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     torch = _require_torch()
+    if not args.planner_checkpoint.exists():
+        raise FileNotFoundError(
+            f"checkpoint not found: {args.planner_checkpoint}\n"
+            "Please run train_planner.py first and verify checkpoint path."
+        )
     payload = getattr(torch, "load")(args.planner_checkpoint, map_location="cpu")
     metrics = payload["metrics"]
     category_to_id = metrics["category_to_id"]

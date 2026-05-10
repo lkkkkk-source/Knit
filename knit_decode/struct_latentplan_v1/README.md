@@ -70,7 +70,7 @@ python -m knit_decode.struct_latentplan_v1.sample_candidates --config knit_decod
 python -m knit_decode.struct_latentplan_v1.sample_candidates --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --category Cable1 --num-candidates 4 --allow-random-init-for-smoke-test --out-dir /tmp/latentplan_smoke/Cable1
 python -m knit_decode.struct_latentplan_v1.rerank_candidates --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --samples-dir struct_latentplan_v1/runs/refiner_latentplan_v1_5x5_k128/samples/Cable1
 python -m knit_decode.struct_latentplan_v1.eval_structure --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --samples-dir struct_latentplan_v1/runs/refiner_latentplan_v1_5x5_k128/samples/Cable1
-python -m knit_decode.struct_latentplan_v1.inspect_planner --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --planner-checkpoint struct_latentplan_v1/runs/planner_latentplan_v1_5x5_k128/checkpoint.pt --category Cable1 --num-samples 8
+python -m knit_decode.struct_latentplan_v1.inspect_planner --config knit_decode/struct_latentplan_v1/configs/latentplan_v1_5x5_k128.yaml --planner-checkpoint knit_decode/struct_latentplan_v1/runs/planner_latentplan_v1_5x5_k128/checkpoint.pt --category Cable1 --num-samples 8
 ```
 
 ## Notes
