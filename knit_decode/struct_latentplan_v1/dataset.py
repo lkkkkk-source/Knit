@@ -2,6 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TypedDict, cast
+
+
+class LatentPlanSample(TypedDict):
+    sample_id: str
+    category: str
+    input_path: str
+    target_path: str
+    index_path: str
 
 
 def _require_torch() -> tuple[object, object]:
@@ -15,40 +24,71 @@ def _require_torch() -> tuple[object, object]:
     return torch, data
 
 
+def load_manifest(path: str | Path) -> list[LatentPlanSample]:
+    manifest_path = Path(path)
+    rows: list[LatentPlanSample] = []
+    for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Expected JSON object line in {manifest_path}")
+        row = {}
+        for key in ["sample_id", "category", "input_path", "target_path", "index_path"]:
+            value = payload.get(key)
+            if not isinstance(value, str):
+                raise ValueError(f"Missing {key!r} in manifest row: {payload!r}")
+            row[key] = value
+        rows.append(cast(LatentPlanSample, row))
+    return rows
+
+
 class LatentPlanDataset:
     def __init__(
         self,
         manifest_path: str | Path,
-        palette_path: str | Path,
+        palette_path: str | Path | None,
         plan_cache_path: str | Path,
         category_to_id: dict[str, int] | None = None,
     ) -> None:
-        from knit_decode.struct_ar_v1.dataset import StructureSampleDataset
-
-        self.structure = StructureSampleDataset(manifest_path, palette_path=palette_path, category_to_id=category_to_id)
-        self.category_to_id = self.structure.category_to_id
-        self.samples = self.structure.samples
-        self.num_classes = self.structure.num_classes
-        torch, _ = _require_torch()
-        cache_payload = getattr(torch, "load")(Path(plan_cache_path), map_location="cpu")
+        self.manifest_path = Path(manifest_path)
+        self.samples = load_manifest(self.manifest_path)
+        cache_payload = _require_torch()[0].load(Path(plan_cache_path), map_location="cpu")
         self.cache_meta = cache_payload["meta"]
         self.cache_by_id = {entry["sample_id"]: entry for entry in cache_payload["items"]}
+        categories = sorted({sample["category"] for sample in self.samples})
+        self.category_to_id = category_to_id or {category: index for index, category in enumerate(categories)}
+        self.num_classes = int(self.cache_meta.get("num_classes", 17))
+        self.palette_path = str(palette_path) if palette_path is not None else None
 
     def __len__(self) -> int:
-        return len(self.structure)
+        return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, object]:
         torch, _ = _require_torch()
-        sample = self.structure[index]
+        sample = self.samples[index]
         sample_id = str(sample["sample_id"])
+        category = str(sample["category"])
+        if category not in self.category_to_id:
+            available = sorted(self.category_to_id)
+            raise KeyError(
+                f"Category {category!r} missing from category_to_id for sample_id={sample_id!r} "
+                f"in manifest={self.manifest_path}. Available categories: {available}"
+            )
         cached = self.cache_by_id.get(sample_id)
         if cached is None:
-            raise KeyError(f"Missing plan cache entry for sample_id={sample_id!r}")
+            raise KeyError(
+                f"Missing plan cache entry for sample_id={sample_id!r} "
+                f"in cache manifest={self.cache_meta.get('manifest', 'unknown_manifest')}"
+            )
+        y20 = cached.get("y20")
+        if not isinstance(y20, list):
+            raise ValueError(f"Invalid y20 in cache for sample_id={sample_id!r}")
         return {
             "sample_id": sample_id,
-            "category": str(sample["category"]),
-            "category_id": int(sample["category_id"]),
-            "y20": sample["grid20"],
+            "category": category,
+            "category_id": int(self.category_to_id[category]),
+            "y20": getattr(torch, "tensor")(y20, dtype=getattr(torch, "long")),
             "z": getattr(torch, "tensor")(int(cached["z"]), dtype=getattr(torch, "long")),
             "c5": getattr(torch, "tensor")(cached["c5"], dtype=getattr(torch, "long")),
             "o5": getattr(torch, "tensor")(cached["o5"], dtype=getattr(torch, "float32")),
@@ -76,7 +116,7 @@ def collate_batch(batch: list[dict[str, object]]) -> dict[str, object]:
 
 def build_dataloader(
     manifest_path: str | Path,
-    palette_path: str | Path,
+    palette_path: str | Path | None,
     plan_cache_path: str | Path,
     batch_size: int,
     shuffle: bool,
@@ -103,4 +143,5 @@ __all__ = [
     "LatentPlanDataset",
     "build_dataloader",
     "collate_batch",
+    "load_manifest",
 ]

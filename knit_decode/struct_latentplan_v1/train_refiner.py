@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-from .dataset import build_dataloader
+from .dataset import build_dataloader, load_manifest
 from .models.planner import LatentPlanner
 from .models.refiner import PlanConditionedMaskRefiner
 from .utils import compute_plan_statistics, ensure_palette_path, finish_progress, format_metric_line, load_config, print_progress
@@ -35,6 +35,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train plan-conditioned MaskGIT refiner.")
     parser.add_argument("--config", type=Path, required=True)
     return parser
+
+
+def _build_category_mapping(train_manifest: Path, val_manifest: Path | None) -> dict[str, int]:
+    train_categories = sorted({sample["category"] for sample in load_manifest(train_manifest)})
+    categories = set(train_categories)
+    val_categories: list[str] = []
+    if val_manifest is not None:
+        val_categories = sorted({sample["category"] for sample in load_manifest(val_manifest)})
+        categories.update(val_categories)
+    category_to_id = {category: index for index, category in enumerate(sorted(categories))}
+    unseen_val_categories = sorted(set(val_categories) - set(train_categories))
+    return {
+        "category_to_id": category_to_id,
+        "train_categories": train_categories,
+        "val_categories": val_categories,
+        "unseen_val_categories": unseen_val_categories,
+    }
 
 
 def _sample_mask(torch: object, targets: object, min_masking_rate: float) -> object:
@@ -86,12 +103,20 @@ def main(argv: list[str] | None = None) -> int:
     torch, optim = _require_torch()
     device = _resolve_device(torch, str(train_cf["device"]))
     palette_path = ensure_palette_path(manifest_path, data_cf.get("palette_path"))
+    mapping_info = _build_category_mapping(manifest_path, val_manifest_path)
+    category_to_id = cast(dict[str, int], mapping_info["category_to_id"])
+    train_categories = cast(list[str], mapping_info["train_categories"])
+    val_categories = cast(list[str], mapping_info["val_categories"])
+    unseen_val_categories = cast(list[str], mapping_info["unseen_val_categories"])
+    if unseen_val_categories:
+        print(f"warning: unseen validation categories detected: {unseen_val_categories}")
     train_loader, train_dataset = build_dataloader(
         manifest_path,
         palette_path=palette_path,
         plan_cache_path=plan_cache_path,
         batch_size=int(train_cf["batch_size"]),
         shuffle=True,
+        category_to_id=category_to_id,
         num_workers=int(train_cf["num_workers"]),
         pin_memory=bool(train_cf["pin_memory"]),
         persistent_workers=bool(train_cf["persistent_workers"]),
@@ -102,13 +127,13 @@ def main(argv: list[str] | None = None) -> int:
         plan_cache_path=val_plan_cache_path,
         batch_size=int(train_cf["batch_size"]),
         shuffle=False,
-        category_to_id=train_dataset.category_to_id,
+        category_to_id=category_to_id,
         num_workers=int(train_cf["num_workers"]),
         pin_memory=bool(train_cf["pin_memory"]),
         persistent_workers=bool(train_cf["persistent_workers"]),
     )
     planner_model = LatentPlanner(
-        num_categories=len(train_dataset.category_to_id),
+        num_categories=len(category_to_id),
         num_modes=int(planner_cf["num_modes"]),
         coarse_size=int(data_cf["coarse_size"]),
         num_classes=int(data_cf["num_classes"]),
@@ -125,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         parameter.requires_grad_(False)
 
     model = PlanConditionedMaskRefiner(
-        num_categories=len(train_dataset.category_to_id),
+        num_categories=len(category_to_id),
         num_modes=int(planner_cf["num_modes"]),
         num_classes=int(data_cf["num_classes"]),
         grid_size=int(data_cf["label_size"]),
@@ -139,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     functional = __import__("importlib").import_module("torch.nn.functional")
     history: list[dict[str, object]] = []
     background_class_id = int(data_cf["background_class_id"])
+    print(format_metric_line("categories:", [("num_categories", len(category_to_id)), ("train_categories", len(train_categories)), ("val_categories", len(val_categories)), ("unseen_val_categories", unseen_val_categories)]))
 
     for epoch in range(int(train_cf["epochs"])):
         print(f"\nepoch {epoch + 1}/{int(train_cf['epochs'])}")
@@ -227,7 +253,12 @@ def main(argv: list[str] | None = None) -> int:
 
     metrics = {
         "history": history,
-        "category_to_id": train_dataset.category_to_id,
+        "category_to_id": category_to_id,
+        "id_to_category": {index: category for category, index in category_to_id.items()},
+        "num_categories": len(category_to_id),
+        "train_categories": train_categories,
+        "val_categories": val_categories,
+        "unseen_val_categories": unseen_val_categories,
         "config": config,
     }
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")

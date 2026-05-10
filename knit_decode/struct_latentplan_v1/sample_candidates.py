@@ -111,11 +111,14 @@ def main(argv: list[str] | None = None) -> int:
             raise FileNotFoundError(f"Missing planner checkpoint: {planner_ckpt}. Use --allow-random-init-for-smoke-test only for code-path validation.")
         category_to_id = {args.category: 0}
     if args.category not in category_to_id:
-        raise KeyError(f"Unknown category {args.category!r}. Known categories: {sorted(category_to_id)}")
+        raise KeyError(
+            f"Unknown category {args.category!r}. "
+            f"Available categories from checkpoint: {sorted(category_to_id)}"
+        )
     device = _resolve_device(torch, args.device or config["train_refiner"]["device"])
 
     planner = LatentPlanner(
-        num_categories=len(category_to_id),
+        num_categories=int(planner_metrics["num_categories"]) if planner_metrics is not None and "num_categories" in planner_metrics else len(category_to_id),
         num_modes=int(planner_cf["num_modes"]),
         coarse_size=int(data_cf["coarse_size"]),
         num_classes=int(data_cf["num_classes"]),
@@ -130,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     planner.eval()
 
     refiner = PlanConditionedMaskRefiner(
-        num_categories=len(category_to_id),
+        num_categories=int(planner_metrics["num_categories"]) if planner_metrics is not None and "num_categories" in planner_metrics else len(category_to_id),
         num_modes=int(planner_cf["num_modes"]),
         num_classes=int(data_cf["num_classes"]),
         grid_size=int(data_cf["label_size"]),
