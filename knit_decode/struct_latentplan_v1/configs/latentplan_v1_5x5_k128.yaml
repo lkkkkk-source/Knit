@@ -1,0 +1,82 @@
+data:
+  train_manifest: outputs/manifests/inverse_rendering_train.jsonl
+  val_manifest: outputs/manifests/inverse_rendering_val.jsonl
+  plan_cache_dir: knit_decode/struct_latentplan_v1/cache/latentplan_v1_5x5_k128
+  palette_path: null
+  label_size: 20
+  num_classes: 17
+  background_class_id: 0
+  coarse_size: 5
+  coarse_threshold: 0.25
+
+planner:
+  mode_type: discrete_kmeans
+  num_modes: 128
+  category_embed_dim: 256
+  mode_embed_dim: 256
+  hidden_dim: 384
+  num_layers: 4
+
+refiner:
+  type: plan_conditioned_maskgit
+  hidden_dim: 384
+  num_layers: 8
+  num_heads: 6
+  use_2d_rope: true
+  use_occupancy_head: true
+  use_label_head: true
+  mask_schedule: cosine
+  block_mask_prob: 0.5
+
+loss:
+  token_ce: 1.0
+  occupancy: 0.5
+  count: 0.1
+  coarse_plan: 0.1
+  syntax: 0.0
+
+sampling:
+  num_candidates: 64
+  z_temperature: 1.2
+  z_top_p: 0.9
+  refinement_steps: 12
+  rerank: true
+
+train_planner:
+  output_dir: struct_latentplan_v1/runs/planner_latentplan_v1_5x5_k128
+  epochs: 20
+  batch_size: 64
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  device: cpu
+  num_workers: 4
+  pin_memory: false
+  persistent_workers: false
+  amp: false
+
+train_refiner:
+  output_dir: struct_latentplan_v1/runs/refiner_latentplan_v1_5x5_k128
+  epochs: 20
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  device: cpu
+  num_workers: 4
+  pin_memory: false
+  persistent_workers: false
+  amp: false
+  min_masking_rate: 0.5
+  sample_choice_temperature: 1.0
+
+rerank:
+  lambda_count: 1.0
+  lambda_fg: 1.0
+  lambda_conn: 0.5
+  lambda_island: 0.25
+  lambda_plan: 0.75
+  lambda_diversity: 0.0
+  tiny_island_threshold: 2
+
+teacher:
+  checkpoint: knit_decode/parser_t_inverse/runs/rendering_instruction17_inverse_v1_lr5e4_sw005/checkpoint.pt
+  enabled: false
