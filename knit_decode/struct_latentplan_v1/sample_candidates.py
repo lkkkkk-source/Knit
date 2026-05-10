@@ -27,6 +27,16 @@ def _resolve_device(torch: object, device_name: str) -> object:
     return device_cls(device_name)
 
 
+def _checkpoint_head_dim(payload: dict[str, object], key: str) -> int:
+    if key in payload:
+        return int(payload[key])
+    state_dict = payload["model_state_dict"]
+    weight = state_dict.get(key.replace("_dim", "_head.weight"))
+    if weight is None:
+        raise KeyError(f"Unable to infer {key} from checkpoint payload.")
+    return int(weight.shape[0])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sample category-only structure candidates from latent planner + refiner.")
     parser.add_argument("--config", type=Path, required=True)
@@ -148,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
             f"Available categories from checkpoint: {sorted(category_to_id)}"
         )
     device = _resolve_device(torch, args.device or config["train_refiner"]["device"])
+    ckpt_grammar_dim = _checkpoint_head_dim(planner_payload, "grammar_signature_dim") if planner_payload is not None else 17
+    ckpt_adj_dim = _checkpoint_head_dim(planner_payload, "adjacency_signature_dim") if planner_payload is not None else 289
 
     planner = LatentPlanner(
         num_categories=int(planner_metrics["num_categories"]) if planner_metrics is not None and "num_categories" in planner_metrics else len(category_to_id),
@@ -159,8 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         hidden_dim=int(planner_cf["hidden_dim"]),
         num_layers=int(planner_cf["num_layers"]),
         coarse_size_10=10,
-        grammar_dim=17,
-        adjacency_dim=289,
+        grammar_dim=ckpt_grammar_dim,
+        adjacency_dim=ckpt_adj_dim,
         max_num_modes_per_category=int(planner_metrics.get("max_num_modes_per_category", planner_cf.get("max_num_modes_per_category", 16))) if planner_metrics is not None else int(planner_cf.get("max_num_modes_per_category", 16)),
     )
     if planner_payload is not None:

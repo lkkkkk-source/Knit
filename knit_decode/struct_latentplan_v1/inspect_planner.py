@@ -37,6 +37,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _checkpoint_head_dim(payload: dict[str, object], key: str) -> int:
+    if key in payload:
+        return int(payload[key])
+    state_dict = payload["model_state_dict"]
+    weight = state_dict.get(key.replace("_dim", "_head.weight"))
+    if weight is None:
+        raise KeyError(f"Unable to infer {key} from checkpoint payload.")
+    return int(weight.shape[0])
+
+
 def _plan_descriptor_from_outputs(c10: list[list[int]], o10: list[list[int]], background_class_id: int) -> tuple[list[float], dict[str, object]]:
     upsampled_labels = upsample_nearest(c10, 20)
     upsampled_occ = upsample_nearest(o10, 20)
@@ -101,6 +111,15 @@ def main(argv: list[str] | None = None) -> int:
             f"Available categories from checkpoint: {sorted(category_to_id)}"
         )
     device = _resolve_device(torch, args.device)
+    ckpt_grammar_dim = _checkpoint_head_dim(payload, "grammar_signature_dim")
+    ckpt_adj_dim = _checkpoint_head_dim(payload, "adjacency_signature_dim")
+    config_grammar_dim = config.get("planner", {}).get("grammar_signature_dim", None)
+    if config_grammar_dim is not None and int(config_grammar_dim) != ckpt_grammar_dim:
+        print(
+            f"warning: config grammar_signature_dim={config_grammar_dim} "
+            f"checkpoint grammar_signature_dim={ckpt_grammar_dim}; "
+            "using checkpoint grammar_signature_dim for inspection"
+        )
     planner = LatentPlanner(
         num_categories=int(metrics["num_categories"]),
         num_modes=int(planner_cf["num_modes"]),
@@ -111,8 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         hidden_dim=int(planner_cf["hidden_dim"]),
         num_layers=int(planner_cf["num_layers"]),
         coarse_size_10=10,
-        grammar_dim=17,
-        adjacency_dim=289,
+        grammar_dim=ckpt_grammar_dim,
+        adjacency_dim=ckpt_adj_dim,
         max_num_modes_per_category=int(metrics.get("max_num_modes_per_category", planner_cf.get("max_num_modes_per_category", 16))),
     )
     planner.load_state_dict(payload["model_state_dict"])
