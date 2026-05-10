@@ -54,6 +54,7 @@ class LatentPlanDataset:
         self.manifest_path = Path(manifest_path)
         self.samples = load_manifest(self.manifest_path)
         cache_payload = _require_torch()[0].load(Path(plan_cache_path), map_location="cpu")
+        self.cache_payload = cache_payload
         self.cache_meta = cache_payload["meta"]
         self.cache_by_id = {entry["sample_id"]: entry for entry in cache_payload["items"]}
         categories = sorted({sample["category"] for sample in self.samples})
