@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .compose_foreground import compose_foreground
 from .models.foreground_planner import ForegroundCanonicalPlanner
-from .utils import bbox_from_mask, checkpoint_get, finish_progress, format_metric_line, foreground_area, foreground_descriptor, label_diversity_on_fg, load_config, normalized_l2_between, print_progress, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map
+from .utils import bbox_from_mask, checkpoint_get, finish_progress, format_metric_line, foreground_area, foreground_descriptor, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map
 
 
 def _require_torch() -> object:
@@ -61,6 +61,12 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     canonical_mode = resolve_canonical_mode(config["data"])
     payload = _require_torch().load(args.checkpoint, map_location="cpu")
+    checkpoint_compatibility = str(checkpoint_get(payload, "checkpoint_compatibility", required=False) or "")
+    if checkpoint_compatibility != "spatial-centroid-v2":
+        raise ValueError(
+            "Checkpoint is incompatible with the current spatial-centroid planner. "
+            "Please retrain with the rebuilt full_masked cache and the current struct_foreground_v1 code."
+        )
     checkpoint_canonical_mode = str(checkpoint_get(payload, "canonical_mode"))
     if checkpoint_canonical_mode != canonical_mode:
         raise ValueError(
@@ -86,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     train_cache_path = Path(str(checkpoint_get(payload, "train_cache_path")))
     cache_payload = _require_torch().load(train_cache_path, map_location="cpu")
     require_foreground_cache_fields(cache_payload, context="Foreground train cache")
+    require_centroid_sketch_fields(cache_payload, context="Foreground train cache")
     if args.category not in cache_payload["category_foreground_area_stats"]:
         raise ValueError(f"Foreground train cache is missing category_foreground_area_stats for category {args.category!r}.")
     area_stats = cache_payload["category_foreground_area_stats"][args.category]
@@ -119,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         num_modes = int(category_to_num_modes[args.category])
         centroid_source = cache_payload["centroid_sketch_by_category"].get(args.category, {})
         centroid_label_hist = []
+        centroid_label_prob_16 = []
         centroid_row_projection = []
         centroid_col_projection = []
         centroid_adjacency = []
@@ -133,8 +141,9 @@ def main(argv: list[str] | None = None) -> int:
             centroid = centroid_source.get(mode_index)
             if centroid is None:
                 raise ValueError(f"Missing centroid sketch for category={args.category!r} local_z={mode_index}.")
-            if "centroid_fg_mask_prob" not in centroid:
-                raise ValueError("Foreground cache is missing centroid_fg_mask_prob. Please rebuild the cache with the current build_foreground_cache.py.")
+            if "centroid_fg_mask_prob" not in centroid or "centroid_label_prob_16" not in centroid:
+                raise ValueError("Foreground cache is missing centroid_fg_mask_prob / centroid_label_prob_16. Please rebuild the cache with the current build_foreground_cache.py.")
+            centroid_label_prob_16.append(centroid["centroid_label_prob_16"])
             centroid_label_hist.append(centroid["centroid_label_hist"])
             centroid_row_projection.append(centroid["centroid_row_projection"])
             centroid_col_projection.append(centroid["centroid_col_projection"])
@@ -144,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         out = model(
             category_ids,
             getattr(torch, "tensor")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z], dtype=getattr(torch, "float32")).unsqueeze(1),
+            getattr(torch, "tensor")(centroid_label_prob_16, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_label_hist, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_row_projection, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_col_projection, dtype=getattr(torch, "float32")),
@@ -179,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                 invalid.append("fg_area_high")
             if label_div <= 1:
                 invalid.append("low_label_diversity")
+            component_stats = mask_component_stats(fg_mask)
             row = {
                 "category": args.category,
                 "sample_index": index,
@@ -188,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
                 "is_valid_foreground": len(invalid) == 0,
                 "mean_fg_area": fg_area,
                 "label_diversity": label_div,
+                "num_components": float(component_stats["num_components"]),
+                "largest_component_ratio": float(component_stats["largest_component_ratio"]),
+                "tiny_component_count": float(component_stats["tiny_component_count"]),
                 "mean_vertical_continuity": float(desc["vertical_continuity"]),
                 "mean_horizontal_continuity": float(desc["horizontal_continuity"]),
                 "mean_center_band_score": float(desc["center_band_score"]),
@@ -216,6 +230,9 @@ def main(argv: list[str] | None = None) -> int:
         "unique_local_z_count": len({int(row["local_z"]) for row in rows}),
         "effective_local_modes": len({int(row["local_z"]) for row in rows}),
         "foreground_label_diversity": sum(float(row["label_diversity"]) for row in rows) / float(max(1, len(rows))),
+        "num_components_mean": sum(float(row["num_components"]) for row in rows) / float(max(1, len(rows))),
+        "largest_component_ratio_mean": sum(float(row["largest_component_ratio"]) for row in rows) / float(max(1, len(rows))),
+        "tiny_component_count_mean": sum(float(row["tiny_component_count"]) for row in rows) / float(max(1, len(rows))),
         "unique_foreground_layout_count": len({str(row["bbox_pred"]) for row in rows}),
         "mean_vertical_continuity": sum(float(row["mean_vertical_continuity"]) for row in rows) / float(max(1, len(rows))),
         "mean_horizontal_continuity": sum(float(row["mean_horizontal_continuity"]) for row in rows) / float(max(1, len(rows))),

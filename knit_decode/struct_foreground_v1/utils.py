@@ -16,6 +16,11 @@ REQUIRED_FOREGROUND_CACHE_KEYS = (
     "descriptor_global_std",
     "category_foreground_area_stats",
 )
+REQUIRED_CENTROID_ENTRY_KEYS = (
+    "centroid_fg_mask_prob",
+    "centroid_fg_mask",
+    "centroid_label_prob_16",
+)
 
 
 def _require_torch() -> object:
@@ -95,6 +100,54 @@ def require_foreground_cache_fields(
             f"{context} is missing required fields: {', '.join(missing)}. "
             "Please rebuild the train foreground cache with the current build_foreground_cache.py."
         )
+
+
+def require_centroid_sketch_fields(
+    cache_payload: dict[str, object],
+    *,
+    context: str = "Foreground cache",
+) -> None:
+    centroid_by_category = cache_payload.get("centroid_sketch_by_category")
+    if not isinstance(centroid_by_category, dict):
+        raise ValueError(
+            f"{context} is missing centroid_sketch_by_category. "
+            "Please rebuild the train foreground cache with the current build_foreground_cache.py."
+        )
+    for category, centroid_entries in centroid_by_category.items():
+        if not isinstance(centroid_entries, dict):
+            raise ValueError(f"{context} centroid_sketch_by_category[{category!r}] must be a dict.")
+        for local_z, centroid in centroid_entries.items():
+            if not isinstance(centroid, dict):
+                raise ValueError(f"{context} centroid_sketch_by_category[{category!r}][{local_z!r}] must be a dict.")
+            missing = [key for key in REQUIRED_CENTROID_ENTRY_KEYS if key not in centroid]
+            if missing:
+                raise ValueError(
+                    f"{context} centroid_sketch_by_category[{category!r}][{local_z!r}] is missing fields: {', '.join(missing)}. "
+                    "Please rebuild the train foreground cache with the current build_foreground_cache.py."
+                )
+            centroid_fg_mask_prob = centroid["centroid_fg_mask_prob"]
+            centroid_fg_mask = centroid["centroid_fg_mask"]
+            centroid_label_prob_16 = centroid["centroid_label_prob_16"]
+            if hasattr(centroid_fg_mask_prob, "tolist"):
+                centroid_fg_mask_prob = centroid_fg_mask_prob.tolist()
+            if hasattr(centroid_fg_mask, "tolist"):
+                centroid_fg_mask = centroid_fg_mask.tolist()
+            if hasattr(centroid_label_prob_16, "tolist"):
+                centroid_label_prob_16 = centroid_label_prob_16.tolist()
+            if not isinstance(centroid_fg_mask_prob, list) or len(centroid_fg_mask_prob) != 1:
+                raise ValueError(f"{context} centroid_fg_mask_prob for category={category!r} local_z={local_z!r} must have shape [1,20,20].")
+            if not isinstance(centroid_fg_mask_prob[0], list) or len(centroid_fg_mask_prob[0]) != 20 or any(not isinstance(row, list) or len(row) != 20 for row in centroid_fg_mask_prob[0]):
+                raise ValueError(f"{context} centroid_fg_mask_prob for category={category!r} local_z={local_z!r} must have shape [1,20,20].")
+            if not isinstance(centroid_fg_mask, list) or len(centroid_fg_mask) != 20 or any(not isinstance(row, list) or len(row) != 20 for row in centroid_fg_mask):
+                raise ValueError(f"{context} centroid_fg_mask for category={category!r} local_z={local_z!r} must have shape [20,20].")
+            if not isinstance(centroid_label_prob_16, list) or len(centroid_label_prob_16) != 16:
+                raise ValueError(f"{context} centroid_label_prob_16 for category={category!r} local_z={local_z!r} must have shape [16,20,20].")
+            for channel_index, channel in enumerate(centroid_label_prob_16):
+                if not isinstance(channel, list) or len(channel) != 20 or any(not isinstance(row, list) or len(row) != 20 for row in channel):
+                    raise ValueError(
+                        f"{context} centroid_label_prob_16 for category={category!r} local_z={local_z!r} "
+                        f"channel={channel_index} must have shape [20,20]."
+                    )
 
 
 def print_progress(stage: str, current: int, total: int, extra: str = "") -> None:
@@ -641,6 +694,42 @@ def foreground_area(mask: list[list[int]] | list[list[bool]]) -> float:
     width = len(mask[0]) if height else 0
     total = max(1, height * width)
     return sum(1 for row in mask for value in row if bool(value)) / float(total)
+
+
+def mask_component_stats(mask: list[list[int]] | list[list[bool]]) -> dict[str, float]:
+    height = len(mask)
+    width = len(mask[0]) if height else 0
+    visited = [[False for _ in range(width)] for _ in range(height)]
+    component_sizes: list[int] = []
+    for y_pos in range(height):
+        for x_pos in range(width):
+            if visited[y_pos][x_pos] or not bool(mask[y_pos][x_pos]):
+                continue
+            stack = [(y_pos, x_pos)]
+            visited[y_pos][x_pos] = True
+            size = 0
+            while stack:
+                cur_y, cur_x = stack.pop()
+                size += 1
+                for next_y, next_x in ((cur_y - 1, cur_x), (cur_y + 1, cur_x), (cur_y, cur_x - 1), (cur_y, cur_x + 1)):
+                    if 0 <= next_y < height and 0 <= next_x < width and not visited[next_y][next_x] and bool(mask[next_y][next_x]):
+                        visited[next_y][next_x] = True
+                        stack.append((next_y, next_x))
+            component_sizes.append(size)
+    if not component_sizes:
+        return {
+            "num_components": 0.0,
+            "largest_component_ratio": 0.0,
+            "tiny_component_count": 0.0,
+        }
+    total_fg = sum(component_sizes)
+    largest = max(component_sizes)
+    tiny_count = sum(1 for size in component_sizes if size <= 4)
+    return {
+        "num_components": float(len(component_sizes)),
+        "largest_component_ratio": float(largest) / float(max(1, total_fg)),
+        "tiny_component_count": float(tiny_count),
+    }
 
 
 def label_diversity_on_fg(labels: list[list[int]], mask: list[list[int]] | list[list[bool]]) -> int:

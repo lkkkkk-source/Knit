@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
+from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
 
 
 def _require_sklearn() -> object:
@@ -140,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
 
     descriptor_global_mean: list[float] = []
     descriptor_global_std: list[float] = []
+    torch = __import__("torch")
 
     if args.fit_kmeans:
         sklearn_cluster = _require_sklearn()
@@ -163,9 +164,9 @@ def main(argv: list[str] | None = None) -> int:
                 item["num_modes_for_category"] = max(1, category_to_num_modes.get(item["category"], 1))
                 item["is_unseen_category"] = False
     else:
-        torch = __import__("torch")
         source_payload = torch.load(Path(args.kmeans_source_cache), map_location="cpu")
         require_foreground_cache_fields(source_payload, context="Source train foreground cache")
+        require_centroid_sketch_fields(source_payload, context="Source train foreground cache")
         category_kmeans_centers = source_payload["category_kmeans_centers"]
         category_to_num_modes = source_payload["category_to_num_modes"]
         descriptors_by_category_stats = source_payload["descriptors_by_category"]
@@ -220,9 +221,32 @@ def main(argv: list[str] | None = None) -> int:
                     threshold = max(0.1, sum(sum(row) for row in fg_mask_prob) / 400.0)
                     centroid_fg_mask = [[1 if float(fg_mask_prob[y_pos][x_pos]) >= threshold else 0 for x_pos in range(20)] for y_pos in range(20)]
                     fallback_used = True
+                centroid_fg_mask_prob_tensor = getattr(torch, "tensor")(fg_mask_prob, dtype=getattr(torch, "float32")).unsqueeze(0)
+                centroid_label_prob_16_tensor = getattr(torch, "tensor")(
+                    [
+                        [
+                            [
+                                sum(1.0 for sample in mode_samples if int(sample["fg_y20"][y_pos][x_pos]) == (label_index + 1)) / float(len(mode_samples))
+                                for x_pos in range(20)
+                            ]
+                            for y_pos in range(20)
+                        ]
+                        for label_index in range(16)
+                    ],
+                    dtype=getattr(torch, "float32"),
+                )
+                if centroid_fg_mask_prob_tensor.dtype != getattr(torch, "float32") or tuple(centroid_fg_mask_prob_tensor.shape) != (1, 20, 20):
+                    raise ValueError(f"centroid_fg_mask_prob_tensor for category={category!r} local_z={mode_index} must be float32 [1,20,20].")
+                if centroid_label_prob_16_tensor.dtype != getattr(torch, "float32") or tuple(centroid_label_prob_16_tensor.shape) != (16, 20, 20):
+                    raise ValueError(f"centroid_label_prob_16_tensor for category={category!r} local_z={mode_index} must be float32 [16,20,20].")
+                if float(centroid_fg_mask_prob_tensor.min().item()) < 0.0 or float(centroid_fg_mask_prob_tensor.max().item()) > 1.0:
+                    raise ValueError(f"centroid_fg_mask_prob_tensor for category={category!r} local_z={mode_index} must stay within [0,1].")
+                if float(centroid_label_prob_16_tensor.min().item()) < 0.0 or float(centroid_label_prob_16_tensor.max().item()) > 1.0:
+                    raise ValueError(f"centroid_label_prob_16_tensor for category={category!r} local_z={mode_index} must stay within [0,1].")
                 centroid_sketch_by_category[category][mode_index] = {
-                    "centroid_fg_mask_prob": fg_mask_prob,
+                    "centroid_fg_mask_prob": centroid_fg_mask_prob_tensor,
                     "centroid_fg_mask": centroid_fg_mask,
+                    "centroid_label_prob_16": centroid_label_prob_16_tensor,
                     "centroid_fg_mask_threshold": float(threshold),
                     "fallback_used": bool(fallback_used),
                     "num_samples": int(len(mode_samples)),
@@ -242,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
             "background_class_id": int(data_cf["background_class_id"]),
             "ignore_index": ignore_index,
             "canonical_mode": canonical_mode,
+            "schema_version": "foreground_v1_full_masked_centroid_label_prob_16_v2",
             "split": "train" if is_train_like else ("val" if "val" in split_name else "test"),
             "source_kmeans_cache": str(args.kmeans_source_cache) if args.kmeans_source_cache is not None else None,
         },
@@ -258,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         "descriptor_slices": descriptor_slices or {},
         "config": config,
     }
-    torch = __import__("torch")
+    require_centroid_sketch_fields(payload, context="Foreground cache payload")
     torch.save(payload, output_path)
     print(format_metric_line("saved foreground cache:", [("output", str(output_path)), ("items", len(items)), ("categories", len(category_kmeans_centers))]))
     return 0

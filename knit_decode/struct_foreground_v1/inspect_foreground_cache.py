@@ -112,9 +112,27 @@ def _centroid_prob_grid(entry: object, *, context: str) -> tuple[list[list[float
         value = value.detach().cpu()
     if hasattr(value, "tolist"):
         value = value.tolist()
-    if not isinstance(value, list) or len(value) != 20 or any(not isinstance(row, list) or len(row) != 20 for row in value):
-        raise ValueError(f"{context}.centroid_fg_mask_prob must have shape [20,20].")
-    return [[float(part) for part in row] for row in value], False
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], list) or len(value[0]) != 20 or any(not isinstance(row, list) or len(row) != 20 for row in value[0]):
+        raise ValueError(f"{context}.centroid_fg_mask_prob must have shape [1,20,20].")
+    return [[float(part) for part in row] for row in value[0]], False
+
+
+def _centroid_label_prob_grid(entry: object, *, context: str) -> list[list[list[float]]]:
+    if not isinstance(entry, dict) or "centroid_label_prob_16" not in entry:
+        raise ValueError(f"{context}.centroid_label_prob_16 is required.")
+    value = entry["centroid_label_prob_16"]
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if not isinstance(value, list) or len(value) != 16:
+        raise ValueError(f"{context}.centroid_label_prob_16 must have shape [16,20,20].")
+    channels: list[list[list[float]]] = []
+    for channel_index, channel in enumerate(value):
+        if not isinstance(channel, list) or len(channel) != 20 or any(not isinstance(row, list) or len(row) != 20 for row in channel):
+            raise ValueError(f"{context}.centroid_label_prob_16[{channel_index}] must have shape [20,20].")
+        channels.append([[float(part) for part in row] for row in channel])
+    return channels
 
 
 def _label_grid_for_display(fg_y20: list[list[int]], fg_mask20: list[list[int]]) -> list[list[int]]:
@@ -184,6 +202,20 @@ def _prob_grid_to_rgb(grid: list[list[float]], *, missing_mask: bool = False) ->
                 rgb_row.append((shade, shade, shade))
         rgb.append(rgb_row)
     return rgb
+
+
+def _label_prob_summary_grids(label_prob_16: list[list[list[float]]]) -> tuple[list[list[float]], list[list[int]], list[list[float]]]:
+    mass_grid = [[0.0 for _ in range(20)] for _ in range(20)]
+    argmax_grid = [[1 for _ in range(20)] for _ in range(20)]
+    confidence_grid = [[0.0 for _ in range(20)] for _ in range(20)]
+    for y_pos in range(20):
+        for x_pos in range(20):
+            values = [float(label_prob_16[channel][y_pos][x_pos]) for channel in range(16)]
+            mass_grid[y_pos][x_pos] = sum(values)
+            best_index = max(range(16), key=lambda index: values[index])
+            argmax_grid[y_pos][x_pos] = best_index + 1
+            confidence_grid[y_pos][x_pos] = round(values[best_index], 3)
+    return mass_grid, argmax_grid, confidence_grid
 
 
 def _save_tiled_grid(
@@ -312,6 +344,9 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(f"Category {args.category!r} missing from centroid_sketch_by_category.")
     centroid_prob_tiles = []
     centroid_bin_tiles = []
+    centroid_label_mass_tiles = []
+    centroid_label_argmax_tiles = []
+    centroid_label_confidence_tiles = []
     centroid_labels = []
     centroid_rows: list[dict[str, object]] = []
     if isinstance(centroid_entries, dict):
@@ -327,8 +362,13 @@ def main(argv: list[str] | None = None) -> int:
             prob_grid = [[0.0 for _ in range(20)] for _ in range(20)]
         if mask_grid is None:
             mask_grid = [[0 for _ in range(20)] for _ in range(20)]
+        label_prob_16 = _centroid_label_prob_grid(entry, context=f"centroid[{args.category}][{local_z}]")
+        label_mass_grid, label_argmax_grid, label_confidence_grid = _label_prob_summary_grids(label_prob_16)
         centroid_prob_tiles.append(_prob_grid_to_rgb(prob_grid, missing_mask=missing_prob))
         centroid_bin_tiles.append(_grid_to_rgb(mask_grid, mode="mask", missing_mask=missing_mask))
+        centroid_label_mass_tiles.append(_prob_grid_to_rgb(label_mass_grid, missing_mask=missing_prob))
+        centroid_label_argmax_tiles.append(_grid_to_rgb(label_argmax_grid, mode="label", missing_mask=missing_prob))
+        centroid_label_confidence_tiles.append(_prob_grid_to_rgb(label_confidence_grid, missing_mask=missing_prob))
         centroid_labels.append(f"z={local_z}")
         if isinstance(entry, dict):
             label_hist = entry.get("centroid_label_hist")
@@ -349,6 +389,8 @@ def main(argv: list[str] | None = None) -> int:
                     "centroid_fg_area_prob_mean": sum(sum(float(value) for value in row) for row in prob_grid) / 400.0,
                     "centroid_fg_area_prob_max": max(max(float(value) for value in row) for row in prob_grid),
                     "centroid_fg_area_bin_mean": foreground_area(mask_grid),
+                    "centroid_label_mass_mean": sum(sum(float(value) for value in row) for row in label_mass_grid) / 400.0,
+                    "centroid_label_confidence_mean": sum(sum(float(value) for value in row) for row in label_confidence_grid) / 400.0,
                     "centroid_fg_mask_threshold": float(entry.get("centroid_fg_mask_threshold", 0.5)),
                     "fallback_used": bool(entry.get("fallback_used", False)),
                     "num_samples": int(entry.get("num_samples", 0)),
@@ -368,6 +410,8 @@ def main(argv: list[str] | None = None) -> int:
                     "centroid_fg_area_prob_mean": 0.0,
                     "centroid_fg_area_prob_max": 0.0,
                     "centroid_fg_area_bin_mean": foreground_area(mask_grid),
+                    "centroid_label_mass_mean": 0.0,
+                    "centroid_label_confidence_mean": 0.0,
                     "centroid_fg_mask_threshold": 0.0,
                     "fallback_used": False,
                     "num_samples": 0,
@@ -380,6 +424,9 @@ def main(argv: list[str] | None = None) -> int:
     _save_tiled_grid(centroid_prob_tiles, centroid_labels, output_dir / f"{args.category}_centroid_mask_prob_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
     _save_tiled_grid(centroid_bin_tiles, centroid_labels, output_dir / f"{args.category}_centroid_mask_bin_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
     _save_tiled_grid(centroid_bin_tiles, centroid_labels, output_dir / f"{args.category}_centroid_masks_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
+    _save_tiled_grid(centroid_label_mass_tiles, centroid_labels, output_dir / f"{args.category}_centroid_label_mass_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
+    _save_tiled_grid(centroid_label_argmax_tiles, centroid_labels, output_dir / f"{args.category}_centroid_label_argmax_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
+    _save_tiled_grid(centroid_label_confidence_tiles, centroid_labels, output_dir / f"{args.category}_centroid_label_confidence_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
 
     sample_stats = {
         "category": args.category,
@@ -396,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
         "category_foreground_area_stats": payload["category_foreground_area_stats"].get(args.category),
     }
     save_json(output_dir / f"{args.category}_sample_stats.json", sample_stats)
-    save_json(output_dir / f"{args.category}_centroid_stats.json", centroid_rows)
+    save_json(output_dir / f"{args.category}_centroid_stats.json", {"note": "centroid_label_argmax_grid is meaningful mainly where centroid_label_mass_grid / centroid_fg_mask_prob is high.", "rows": centroid_rows})
     save_jsonl(output_dir / f"{args.category}_samples.jsonl", sample_rows)
     print(
         format_metric_line(

@@ -84,6 +84,15 @@ Interpretation:
 6. `centroid_fg_mask_prob` is the cluster foreground occupancy probability map, while `centroid_fg_mask` is the thresholded binary mask.
 7. Planner conditioning continues to use internal centroid statistics; cache inspection should compare both probability and binary centroid masks.
 
+Current spatial-centroid planner requirements:
+
+- centroid cache now includes `centroid_label_prob_16` with shape `[16,20,20]` for each `category/local_z`
+- planner consumes `centroid_fg_mask_prob [1,20,20]` and `centroid_label_prob_16 [16,20,20]` as direct spatial conditions
+- training adds mask BCE + Dice + soft-IoU + foreground CE + low-weight centroid label MSE
+- diagnostics now track empty/full, fg_area_low/high, low_label_diversity, num_components, largest_component_ratio, and tiny_component_count
+- old `foreground_cache_train.pt` / `foreground_cache_val.pt` built before `centroid_label_prob_16` are incompatible and must be rebuilt
+- old checkpoints built before the spatial-centroid planner update are incompatible and must not be reused
+
 Notes:
 
 - train cache is saved as `foreground_cache_train.pt`

@@ -6,10 +6,10 @@ import math
 from pathlib import Path
 from typing import cast
 
+from .compose_foreground import compose_foreground
 from .dataset import build_dataloader, load_manifest
 from .models.foreground_planner import ForegroundCanonicalPlanner
-from .compose_foreground import compose_foreground
-from .utils import IGNORE_INDEX, finish_progress, format_metric_line, foreground_area, label_diversity_on_fg, load_config, print_progress, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode
+from .utils import finish_progress, foreground_area, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode
 
 
 def _require_torch() -> tuple[object, object]:
@@ -58,8 +58,6 @@ def _safe_entropy(counts: list[int]) -> float:
     total = float(sum(counts))
     if total <= 0.0:
         return 0.0
-    import math
-
     entropy = 0.0
     for count in counts:
         if count <= 0:
@@ -77,14 +75,33 @@ def _effective_modes(counts: list[int]) -> float:
     return 1.0 / max(denom, 1e-12)
 
 
+def _soft_dice_loss(torch: object, pred_prob: object, target: object, eps: float = 1e-6) -> object:
+    intersection = (pred_prob * target).sum(dim=(1, 2))
+    denom = pred_prob.sum(dim=(1, 2)) + target.sum(dim=(1, 2))
+    dice = (2.0 * intersection + eps) / (denom + eps)
+    return 1.0 - dice.mean()
+
+
+def _soft_iou_loss(torch: object, pred_prob: object, target: object, eps: float = 1e-6) -> object:
+    intersection = (pred_prob * target).sum(dim=(1, 2))
+    union = (pred_prob + target - pred_prob * target).sum(dim=(1, 2))
+    iou = (intersection + eps) / (union + eps)
+    return 1.0 - iou.mean()
+
+
 def _init_generated_metric_state() -> dict[str, object]:
     return {
         "sample_count": 0,
         "fg_mask_iou_sum": 0.0,
         "fg_label_acc_on_fg_sum": 0.0,
-        "foreground_label_ce_sum": 0.0,
+        "raw_fg_ce_sum": 0.0,
+        "weighted_fg_ce_sum": 0.0,
         "bbox_l1_sum": 0.0,
         "centroid_mask_loss_sum": 0.0,
+        "mask_bce_loss_sum": 0.0,
+        "mask_dice_loss_sum": 0.0,
+        "mask_soft_iou_loss_sum": 0.0,
+        "centroid_label_loss_sum": 0.0,
         "row_projection_l1_sum": 0.0,
         "col_projection_l1_sum": 0.0,
         "adjacency_l1_sum": 0.0,
@@ -104,6 +121,10 @@ def _init_generated_metric_state() -> dict[str, object]:
         "label_diversity_sum": 0.0,
         "label_diversity_min": float("inf"),
         "label_diversity_max": 0.0,
+        "num_components_sum": 0.0,
+        "largest_component_ratio_sum": 0.0,
+        "tiny_component_count_sum": 0.0,
+        "fragmented_count": 0,
         "local_mode_counts": {},
     }
 
@@ -148,9 +169,14 @@ def _accumulate_generated_metrics(
     metric_state["sample_count"] = int(metric_state["sample_count"]) + batch_size
     metric_state["fg_mask_iou_sum"] = float(metric_state["fg_mask_iou_sum"]) + fg_mask_iou * batch_size
     metric_state["fg_label_acc_on_fg_sum"] = float(metric_state["fg_label_acc_on_fg_sum"]) + label_acc * batch_size
-    metric_state["foreground_label_ce_sum"] = float(metric_state["foreground_label_ce_sum"]) + float(losses["fg_ce"]) * batch_size
+    metric_state["raw_fg_ce_sum"] = float(metric_state["raw_fg_ce_sum"]) + float(losses["raw_fg_ce"]) * batch_size
+    metric_state["weighted_fg_ce_sum"] = float(metric_state["weighted_fg_ce_sum"]) + float(losses["weighted_fg_ce"]) * batch_size
     metric_state["bbox_l1_sum"] = float(metric_state["bbox_l1_sum"]) + float(losses["bbox"]) * batch_size
     metric_state["centroid_mask_loss_sum"] = float(metric_state["centroid_mask_loss_sum"]) + float(losses["centroid_mask"]) * batch_size
+    metric_state["mask_bce_loss_sum"] = float(metric_state["mask_bce_loss_sum"]) + float(losses["mask_bce"]) * batch_size
+    metric_state["mask_dice_loss_sum"] = float(metric_state["mask_dice_loss_sum"]) + float(losses["mask_dice"]) * batch_size
+    metric_state["mask_soft_iou_loss_sum"] = float(metric_state["mask_soft_iou_loss_sum"]) + float(losses["mask_soft_iou"]) * batch_size
+    metric_state["centroid_label_loss_sum"] = float(metric_state["centroid_label_loss_sum"]) + float(losses["centroid_label"]) * batch_size
     metric_state["row_projection_l1_sum"] = float(metric_state["row_projection_l1_sum"]) + float(losses["row"]) * batch_size
     metric_state["col_projection_l1_sum"] = float(metric_state["col_projection_l1_sum"]) + float(losses["col"]) * batch_size
     metric_state["adjacency_l1_sum"] = float(metric_state["adjacency_l1_sum"]) + float(losses["adj"]) * batch_size
@@ -169,12 +195,14 @@ def _accumulate_generated_metrics(
         valid_high = float(area_stats.get("valid_high", 1.0))
         area = foreground_area(pred_mask)
         label_diversity = float(label_diversity_on_fg(pred_label, pred_mask))
+        component_stats = mask_component_stats(pred_mask)
         bbox_valid = _bbox_is_valid(bbox_pred)
         is_empty = area <= 0.0
         is_full = area >= 0.99
         is_area_low = area < valid_low
         is_area_high = area > valid_high
         is_low_diversity = label_diversity <= 1.0
+        is_fragmented = component_stats["num_components"] > 1.0
         is_valid = not any([is_empty, is_full, is_area_low, is_area_high, is_low_diversity, not bbox_valid])
         metric_state["fg_area_sum"] = float(metric_state["fg_area_sum"]) + area
         metric_state["fg_area_min"] = min(float(metric_state["fg_area_min"]), area)
@@ -184,6 +212,9 @@ def _accumulate_generated_metrics(
         metric_state["label_diversity_sum"] = float(metric_state["label_diversity_sum"]) + label_diversity
         metric_state["label_diversity_min"] = min(float(metric_state["label_diversity_min"]), label_diversity)
         metric_state["label_diversity_max"] = max(float(metric_state["label_diversity_max"]), label_diversity)
+        metric_state["num_components_sum"] = float(metric_state["num_components_sum"]) + float(component_stats["num_components"])
+        metric_state["largest_component_ratio_sum"] = float(metric_state["largest_component_ratio_sum"]) + float(component_stats["largest_component_ratio"])
+        metric_state["tiny_component_count_sum"] = float(metric_state["tiny_component_count_sum"]) + float(component_stats["tiny_component_count"])
         if area <= 0.0:
             metric_state["empty_count"] = int(metric_state["empty_count"]) + 1
         if area >= 0.99:
@@ -196,6 +227,8 @@ def _accumulate_generated_metrics(
             metric_state["low_label_diversity_count"] = int(metric_state["low_label_diversity_count"]) + 1
         if not bbox_valid:
             metric_state["invalid_bbox_count"] = int(metric_state["invalid_bbox_count"]) + 1
+        if is_fragmented:
+            metric_state["fragmented_count"] = int(metric_state["fragmented_count"]) + 1
         if is_valid:
             metric_state["valid_foreground_count"] = int(metric_state["valid_foreground_count"]) + 1
 
@@ -208,23 +241,29 @@ def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, fl
     metrics = {
         "fg_mask_iou": float(metric_state["fg_mask_iou_sum"]) / denom,
         "fg_label_acc_on_fg": float(metric_state["fg_label_acc_on_fg_sum"]) / denom,
-        "foreground_label_ce": float(metric_state["foreground_label_ce_sum"]) / denom,
+        "raw_fg_ce": float(metric_state["raw_fg_ce_sum"]) / denom,
+        "weighted_fg_ce": float(metric_state["weighted_fg_ce_sum"]) / denom,
+        "bbox_l1": float(metric_state["bbox_l1_sum"]) / denom,
+        "centroid_mask_loss": float(metric_state["centroid_mask_loss_sum"]) / denom,
+        "mask_bce_loss": float(metric_state["mask_bce_loss_sum"]) / denom,
+        "mask_dice_loss": float(metric_state["mask_dice_loss_sum"]) / denom,
+        "mask_soft_iou_loss": float(metric_state["mask_soft_iou_loss_sum"]) / denom,
+        "centroid_label_loss": float(metric_state["centroid_label_loss_sum"]) / denom,
+        "row_projection_l1": float(metric_state["row_projection_l1_sum"]) / denom,
+        "col_projection_l1": float(metric_state["col_projection_l1_sum"]) / denom,
+        "adjacency_l1": float(metric_state["adjacency_l1_sum"]) / denom,
+        "grammar_l1": float(metric_state["grammar_l1_sum"]) / denom,
         "empty_foreground_rate": float(metric_state["empty_count"]) / denom,
         "full_foreground_rate": float(metric_state["full_count"]) / denom,
         "fg_area_low_rate": float(metric_state["fg_area_low_count"]) / denom,
         "fg_area_high_rate": float(metric_state["fg_area_high_count"]) / denom,
         "low_label_diversity_rate": float(metric_state["low_label_diversity_count"]) / denom,
         "invalid_bbox_rate": float(metric_state["invalid_bbox_count"]) / denom,
+        "fragmented_rate": float(metric_state["fragmented_count"]) / denom,
         "valid_foreground_rate": float(metric_state["valid_foreground_count"]) / denom,
         "local_z_entropy": float(_safe_entropy(mode_hist)),
         "effective_local_modes": float(_effective_modes(mode_hist)),
         "sampled_unique_local_z_count": float(len(local_counts)),
-        "bbox_l1": float(metric_state["bbox_l1_sum"]) / denom,
-        "centroid_mask_loss": float(metric_state["centroid_mask_loss_sum"]) / denom,
-        "row_projection_l1": float(metric_state["row_projection_l1_sum"]) / denom,
-        "col_projection_l1": float(metric_state["col_projection_l1_sum"]) / denom,
-        "adjacency_l1": float(metric_state["adjacency_l1_sum"]) / denom,
-        "grammar_l1": float(metric_state["grammar_l1_sum"]) / denom,
         "fg_area_mean": float(metric_state["fg_area_sum"]) / denom,
         "fg_area_min": 0.0 if sample_count <= 0 else float(metric_state["fg_area_min"]),
         "fg_area_max": 0.0 if sample_count <= 0 else float(metric_state["fg_area_max"]),
@@ -233,6 +272,9 @@ def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, fl
         "label_diversity_mean": float(metric_state["label_diversity_sum"]) / denom,
         "label_diversity_min": 0.0 if sample_count <= 0 else float(metric_state["label_diversity_min"]),
         "label_diversity_max": 0.0 if sample_count <= 0 else float(metric_state["label_diversity_max"]),
+        "num_components_mean": float(metric_state["num_components_sum"]) / denom,
+        "largest_component_ratio_mean": float(metric_state["largest_component_ratio_sum"]) / denom,
+        "tiny_component_count_mean": float(metric_state["tiny_component_count_sum"]) / denom,
     }
     for key, value in list(metrics.items()):
         if key in {
@@ -242,6 +284,7 @@ def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, fl
             "fg_area_high_rate",
             "low_label_diversity_rate",
             "invalid_bbox_rate",
+            "fragmented_rate",
             "valid_foreground_rate",
             "fg_area_mean",
             "fg_area_min",
@@ -251,12 +294,36 @@ def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, fl
             "label_diversity_mean",
             "label_diversity_min",
             "label_diversity_max",
+            "num_components_mean",
+            "largest_component_ratio_mean",
+            "tiny_component_count_mean",
         }:
             metrics[f"sampled_{key}"] = value
     return metrics
 
 
-def _evaluate_loader(model: object, loader: object, device: object, torch: object, functional: object, ignore_index: int) -> dict[str, float]:
+def _resolve_loss_weights(train_cf: dict[str, object]) -> dict[str, float]:
+    loss_weights = cast(dict[str, float], train_cf.get("loss_weights", {}))
+    resolved = {
+        "local_z": float(loss_weights.get("local_z", 1.0)),
+        "mask_bce_weight": float(loss_weights.get("fg_mask", 1.0)),
+        "mask_dice_weight": float(train_cf.get("mask_dice_weight", loss_weights.get("mask_dice", 0.5))),
+        "mask_soft_iou_weight": float(train_cf.get("mask_soft_iou_weight", loss_weights.get("mask_soft_iou", 0.5))),
+        "fg_label_weight": float(loss_weights.get("fg_label", 1.0)),
+        "centroid_mask_weight": float(loss_weights.get("centroid_mask_weight", 0.05)),
+        "centroid_label_weight": float(train_cf.get("centroid_label_weight", loss_weights.get("centroid_label", 0.05))),
+        "bbox": float(loss_weights.get("bbox", 1.0)),
+        "row_projection": float(loss_weights.get("row_projection", 1.0)),
+        "col_projection": float(loss_weights.get("col_projection", 1.0)),
+        "grammar_signature": float(loss_weights.get("grammar_signature", 1.0)),
+        "adjacency": float(loss_weights.get("adjacency", 1.0)),
+    }
+    if "mask_dice_weight" not in train_cf or "mask_soft_iou_weight" not in train_cf or "centroid_label_weight" not in train_cf:
+        _warn("train.mask_dice_weight / train.mask_soft_iou_weight / train.centroid_label_weight not fully set; falling back to train.loss_weights for compatibility")
+    return resolved
+
+
+def _evaluate_loader(model: object, loader: object, device: object, torch: object, functional: object, ignore_index: int, fg_label_weight: float) -> dict[str, float]:
     model.eval()
     metric_state = _init_generated_metric_state()
     category_area_stats = loader.dataset.cache_payload["category_foreground_area_stats"]
@@ -269,6 +336,7 @@ def _evaluate_loader(model: object, loader: object, device: object, torch: objec
             outputs = model(
                 batch["category_ids"].to(device),
                 centroid_fg_mask_prob=batch["centroid_fg_mask_prob"].to(device),
+                centroid_label_prob_16=batch["centroid_label_prob_16"].to(device),
                 centroid_label_hist=batch["centroid_label_hist"].to(device),
                 centroid_row_projection=batch["centroid_row_projection"].to(device),
                 centroid_col_projection=batch["centroid_col_projection"].to(device),
@@ -278,23 +346,31 @@ def _evaluate_loader(model: object, loader: object, device: object, torch: objec
                 local_z=local_z,
                 mode_mask=mode_mask,
             )
+            fg_mask_target = batch["fg_mask20"].to(device)
+            fg_mask_prob = getattr(torch, "sigmoid")(outputs["fg_mask_logits"].squeeze(1))
             fg_target = batch["fg_y20"].to(device)
             fg_label_target = getattr(torch, "where")(fg_target >= 1, fg_target - 1, fg_target)
             losses = {
-                "fg_ce": float(functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=ignore_index).item()),
+                "mask_bce": float(functional.binary_cross_entropy_with_logits(outputs["fg_mask_logits"].squeeze(1), fg_mask_target).item()),
+                "mask_dice": float(_soft_dice_loss(torch, fg_mask_prob, fg_mask_target).item()),
+                "mask_soft_iou": float(_soft_iou_loss(torch, fg_mask_prob, fg_mask_target).item()),
+                "raw_fg_ce": float(functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=ignore_index).item()),
                 "bbox": float(functional.l1_loss(outputs["bbox_pred"], batch["bbox_stats"].to(device)).item()),
                 "centroid_mask": float(functional.binary_cross_entropy_with_logits(outputs["fg_mask_logits"].squeeze(1), batch["centroid_fg_mask_prob"].to(device).squeeze(1)).item()),
+                "centroid_label": float(functional.mse_loss(outputs["centroid_label_prob_pred"], batch["centroid_label_prob_16"].to(device)).item()),
                 "row": float(functional.l1_loss(outputs["row_projection_pred"], batch["row_projection"].to(device)).item()),
                 "col": float(functional.l1_loss(outputs["col_projection_pred"], batch["col_projection"].to(device)).item()),
                 "grammar": float(functional.l1_loss(outputs["grammar_signature_pred"], batch["grammar_signature"].to(device)).item()),
                 "adj": float(functional.l1_loss(outputs["adjacency_signature_pred"], batch["adjacency_signature"].to(device)).item()),
             }
+            losses["weighted_fg_ce"] = losses["raw_fg_ce"] * fg_label_weight
             _accumulate_generated_metrics(torch, metric_state, outputs, batch, losses, category_area_stats)
     return _finalize_generated_metrics(metric_state)
 
 
 def _require_cache_payload_fields(cache_payload: dict[str, object], *, context: str) -> None:
     require_foreground_cache_fields(cache_payload, context=context)
+    require_centroid_sketch_fields(cache_payload, context=context)
     for key in ["centroid_sketch_by_category", "category_to_num_modes", "descriptor_slices"]:
         if key not in cache_payload:
             raise ValueError(f"{context} is missing required field {key!r}.")
@@ -313,7 +389,8 @@ def main(argv: list[str] | None = None) -> int:
     train_cf = config["train"]
     canonical_mode = resolve_canonical_mode(data_cf)
     ignore_index = int(data_cf.get("ignore_index", -100))
-    loss_weights = cast(dict[str, float], train_cf.get("loss_weights", {}))
+    resolved_loss_weights = _resolve_loss_weights(train_cf)
+    train_cf["fg_label_weight"] = resolved_loss_weights["fg_label_weight"]
     train_manifest = Path(data_cf["train_manifest"])
     val_manifest = Path(data_cf["val_manifest"])
     train_cache = Path(data_cf["cache_dir"]) / "foreground_cache_train.pt"
@@ -343,6 +420,11 @@ def main(argv: list[str] | None = None) -> int:
                 ("categories", len(category_to_id)),
                 ("unseen_val_categories", unseen_val_categories),
                 ("category_to_num_modes", train_dataset.cache_payload["category_to_num_modes"]),
+                ("mask_bce_weight", resolved_loss_weights["mask_bce_weight"]),
+                ("mask_dice_weight", resolved_loss_weights["mask_dice_weight"]),
+                ("mask_soft_iou_weight", resolved_loss_weights["mask_soft_iou_weight"]),
+                ("fg_label_weight", resolved_loss_weights["fg_label_weight"]),
+                ("centroid_label_weight", resolved_loss_weights["centroid_label_weight"]),
             ],
         )
     )
@@ -382,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
             outputs = model(
                 batch["category_ids"].to(device),
                 centroid_fg_mask_prob=batch["centroid_fg_mask_prob"].to(device),
+                centroid_label_prob_16=batch["centroid_label_prob_16"].to(device),
                 centroid_label_hist=batch["centroid_label_hist"].to(device),
                 centroid_row_projection=batch["centroid_row_projection"].to(device),
                 centroid_col_projection=batch["centroid_col_projection"].to(device),
@@ -392,12 +475,16 @@ def main(argv: list[str] | None = None) -> int:
                 mode_mask=mode_mask,
             )
             fg_mask_target = batch["fg_mask20"].to(device)
-            fg_mask_loss = functional.binary_cross_entropy_with_logits(outputs["fg_mask_logits"].squeeze(1), fg_mask_target)
+            fg_mask_prob = getattr(torch, "sigmoid")(outputs["fg_mask_logits"].squeeze(1))
+            fg_mask_bce = functional.binary_cross_entropy_with_logits(outputs["fg_mask_logits"].squeeze(1), fg_mask_target)
+            fg_mask_dice = _soft_dice_loss(torch, fg_mask_prob, fg_mask_target)
+            fg_mask_soft_iou = _soft_iou_loss(torch, fg_mask_prob, fg_mask_target)
             fg_target = batch["fg_y20"].to(device)
-            fg_label_target = fg_target.clone()
-            fg_label_target = getattr(torch, "where")(fg_label_target >= 1, fg_label_target - 1, fg_label_target)
-            fg_ce = functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=ignore_index)
+            fg_label_target = getattr(torch, "where")(fg_target >= 1, fg_target - 1, fg_target)
+            raw_fg_ce = functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=ignore_index)
+            weighted_fg_ce = resolved_loss_weights["fg_label_weight"] * raw_fg_ce
             centroid_mask_loss = functional.binary_cross_entropy_with_logits(outputs["fg_mask_logits"].squeeze(1), batch["centroid_fg_mask_prob"].to(device).squeeze(1))
+            centroid_label_loss = functional.mse_loss(outputs["centroid_label_prob_pred"], batch["centroid_label_prob_16"].to(device))
             bbox_loss = functional.l1_loss(outputs["bbox_pred"], batch["bbox_stats"].to(device))
             row_loss = functional.l1_loss(outputs["row_projection_pred"], batch["row_projection"].to(device))
             col_loss = functional.l1_loss(outputs["col_projection_pred"], batch["col_projection"].to(device))
@@ -405,15 +492,18 @@ def main(argv: list[str] | None = None) -> int:
             adj_loss = functional.l1_loss(outputs["adjacency_signature_pred"], batch["adjacency_signature"].to(device))
             z_loss = functional.cross_entropy(outputs["local_z_logits"].masked_fill(mode_mask.logical_not(), float("-inf")), local_z)
             loss = (
-                float(loss_weights.get("local_z", 1.0)) * z_loss
-                + float(loss_weights.get("fg_mask", 1.0)) * fg_mask_loss
-                + float(loss_weights.get("fg_label", 1.0)) * fg_ce
-                + float(loss_weights.get("centroid_mask_weight", 0.05)) * centroid_mask_loss
-                + float(loss_weights.get("bbox", 1.0)) * bbox_loss
-                + float(loss_weights.get("row_projection", 1.0)) * row_loss
-                + float(loss_weights.get("col_projection", 1.0)) * col_loss
-                + float(loss_weights.get("grammar_signature", 1.0)) * grammar_loss
-                + float(loss_weights.get("adjacency", 1.0)) * adj_loss
+                resolved_loss_weights["local_z"] * z_loss
+                + resolved_loss_weights["mask_bce_weight"] * fg_mask_bce
+                + resolved_loss_weights["mask_dice_weight"] * fg_mask_dice
+                + resolved_loss_weights["mask_soft_iou_weight"] * fg_mask_soft_iou
+                + weighted_fg_ce
+                + resolved_loss_weights["centroid_mask_weight"] * centroid_mask_loss
+                + resolved_loss_weights["centroid_label_weight"] * centroid_label_loss
+                + resolved_loss_weights["bbox"] * bbox_loss
+                + resolved_loss_weights["row_projection"] * row_loss
+                + resolved_loss_weights["col_projection"] * col_loss
+                + resolved_loss_weights["grammar_signature"] * grammar_loss
+                + resolved_loss_weights["adjacency"] * adj_loss
             )
             optimizer.zero_grad()
             loss.backward()
@@ -421,9 +511,14 @@ def main(argv: list[str] | None = None) -> int:
             total_loss += float(loss.item())
             batch_step_count += 1
             losses = {
-                "fg_ce": float(fg_ce.item()),
+                "mask_bce": float(fg_mask_bce.item()),
+                "mask_dice": float(fg_mask_dice.item()),
+                "mask_soft_iou": float(fg_mask_soft_iou.item()),
+                "raw_fg_ce": float(raw_fg_ce.item()),
+                "weighted_fg_ce": float(weighted_fg_ce.item()),
                 "bbox": float(bbox_loss.item()),
                 "centroid_mask": float(centroid_mask_loss.item()),
+                "centroid_label": float(centroid_label_loss.item()),
                 "row": float(row_loss.item()),
                 "col": float(col_loss.item()),
                 "grammar": float(grammar_loss.item()),
@@ -432,13 +527,15 @@ def main(argv: list[str] | None = None) -> int:
             _accumulate_generated_metrics(torch, metric_state, outputs, batch, losses, train_dataset.cache_payload["category_foreground_area_stats"])
             current_count = int(metric_state["sample_count"])
             batch_count = current_count / max(1, int(train_cf["batch_size"]))
-            print_progress("fg-train", int(min(len(train_loader), math.ceil(batch_count))), len(train_loader), f"loss={total_loss / max(1, batch_step_count):.4f} fg_ce={losses['fg_ce']:.4f}")
+            print_progress(
+                "fg-train",
+                int(min(len(train_loader), math.ceil(batch_count))),
+                len(train_loader),
+                f"loss={total_loss / max(1, batch_step_count):.4f} raw_fg_ce={losses['raw_fg_ce']:.4f} weighted_fg_ce={losses['weighted_fg_ce']:.4f}",
+            )
         finish_progress()
         train_summary = _finalize_generated_metrics(metric_state)
-        if len(val_dataset) > 0:
-            val_summary = _evaluate_loader(model, val_loader, device, torch, functional, ignore_index)
-        else:
-            val_summary = {}
+        val_summary = _evaluate_loader(model, val_loader, device, torch, functional, ignore_index, resolved_loss_weights["fg_label_weight"]) if len(val_dataset) > 0 else {}
         summary = {
             "epoch": epoch + 1,
             "train_loss": total_loss / float(max(1, len(train_loader))),
@@ -447,11 +544,40 @@ def main(argv: list[str] | None = None) -> int:
             "val_seen_count": len(val_dataset),
             "val_unseen_skipped_count": val_dataset.skipped_unseen_count,
             "unseen_val_categories": unseen_val_categories,
+            "requires_cache_rebuild": True,
+            "checkpoint_compatibility": "spatial-centroid-v2",
         }
         history.append(summary)
-        metric_items = [("train_loss", cast(float, summary["train_loss"])), ("train_fg_iou", cast(float, summary["train_fg_mask_iou"]))]
+        metric_items = [
+            ("train_loss", cast(float, summary["train_loss"])),
+            ("train_fg_iou", cast(float, summary["train_fg_mask_iou"])),
+            ("train_raw_fg_ce", cast(float, summary["train_raw_fg_ce"])),
+            ("train_weighted_fg_ce", cast(float, summary["train_weighted_fg_ce"])),
+            ("train_empty_rate", cast(float, summary["train_empty_foreground_rate"])),
+            ("train_full_rate", cast(float, summary["train_full_foreground_rate"])),
+            ("train_area_low_rate", cast(float, summary["train_fg_area_low_rate"])),
+            ("train_area_high_rate", cast(float, summary["train_fg_area_high_rate"])),
+            ("train_low_div_rate", cast(float, summary["train_low_label_diversity_rate"])),
+            ("train_num_comp", cast(float, summary["train_num_components_mean"])),
+            ("train_largest_comp", cast(float, summary["train_largest_component_ratio_mean"])),
+            ("train_tiny_comp", cast(float, summary["train_tiny_component_count_mean"])),
+        ]
         if "val_valid_foreground_rate" in summary:
-            metric_items.append(("val_valid_fg", cast(float, summary["val_valid_foreground_rate"])))
+            metric_items.extend(
+                [
+                    ("val_valid_fg", cast(float, summary["val_valid_foreground_rate"])),
+                    ("val_raw_fg_ce", cast(float, summary["val_raw_fg_ce"])),
+                    ("val_weighted_fg_ce", cast(float, summary["val_weighted_fg_ce"])),
+                    ("val_empty_rate", cast(float, summary["val_empty_foreground_rate"])),
+                    ("val_full_rate", cast(float, summary["val_full_foreground_rate"])),
+                    ("val_area_low_rate", cast(float, summary["val_fg_area_low_rate"])),
+                    ("val_area_high_rate", cast(float, summary["val_fg_area_high_rate"])),
+                    ("val_low_div_rate", cast(float, summary["val_low_label_diversity_rate"])),
+                    ("val_num_comp", cast(float, summary["val_num_components_mean"])),
+                    ("val_largest_comp", cast(float, summary["val_largest_component_ratio_mean"])),
+                    ("val_tiny_comp", cast(float, summary["val_tiny_component_count_mean"])),
+                ]
+            )
         else:
             metric_items.append(("val_valid_fg", "n/a"))
         print(format_metric_line("summary foreground:", metric_items))
@@ -482,6 +608,9 @@ def main(argv: list[str] | None = None) -> int:
             "adjacency_signature_dim": len(train_dataset[0]["adjacency_signature"]),
             "bbox_dim": len(train_dataset[0]["bbox_stats"]),
             "max_num_modes": int(planner_cf["num_modes_per_category"]),
+            "spatial_condition_channels": 17,
+            "checkpoint_compatibility": "spatial-centroid-v2",
+            "requires_cache_rebuild": True,
         }
         checkpoint_last_path = output_dir / "checkpoint_last.pt"
         getattr(torch, "save")(checkpoint_payload, checkpoint_last_path)
@@ -517,6 +646,9 @@ def main(argv: list[str] | None = None) -> int:
         "best_metric_value": best_metric_value,
         "config": config,
         "canonical_mode": canonical_mode,
+        "spatial_condition_channels": 17,
+        "checkpoint_compatibility": "spatial-centroid-v2",
+        "requires_cache_rebuild": True,
     }
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
     return 0

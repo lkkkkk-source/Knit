@@ -20,10 +20,17 @@ train:
   batch_size: 32
   learning_rate: 0.0001
   weight_decay: 0.0001
+  mask_dice_weight: 0.5
+  mask_soft_iou_weight: 0.5
+  centroid_label_weight: 0.05
   loss_weights:
     local_z: 1.0
     fg_mask: 1.0
+    mask_dice: 0.5
+    mask_soft_iou: 0.5
     fg_label: 1.0
+    centroid_mask_weight: 0.05
+    centroid_label: 0.05
     bbox: 1.0
     row_projection: 1.0
     col_projection: 1.0
