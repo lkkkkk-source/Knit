@@ -36,6 +36,14 @@ def _load_manifest(path: Path) -> list[dict[str, object]]:
     return rows
 
 
+def _infer_manifest_root(manifest_path: Path, rows: list[dict[str, object]]) -> Path:
+    search_roots = [manifest_path.parent, *manifest_path.parents]
+    for candidate_root in search_roots:
+        if all((candidate_root / str(row["target_path"])).exists() for row in rows[: min(4, len(rows))]):
+            return candidate_root
+    return manifest_path.parent
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -47,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = Path(args.output or (output_dir / f"{manifest_path.stem}.pt"))
     rows = _load_manifest(manifest_path)
+    manifest_root = _infer_manifest_root(manifest_path, rows)
     total = len(rows)
     items: list[dict[str, object]] = []
     descriptors_by_category: dict[str, list[list[float]]] = {}
@@ -55,7 +64,10 @@ def main(argv: list[str] | None = None) -> int:
     from .utils import load_label_grid
 
     for index, row in enumerate(rows, start=1):
-        y20 = load_label_grid(row["target_path"])
+        target_path = Path(str(row["target_path"]))
+        if not target_path.is_absolute():
+            target_path = (manifest_root / target_path).resolve()
+        y20 = load_label_grid(target_path)
         canonical = canonicalize_foreground(y20, background_class_id=int(data_cf["background_class_id"]), canonical_size=int(data_cf["canonical_size"]))
         descriptor = foreground_descriptor(canonical["fg_y20"], canonical["fg_mask20"], canonical["bbox"])
         item = {

@@ -127,6 +127,7 @@ def load_label_grid(path: str | Path) -> list[list[int]]:
     except Exception as error:
         raise ImportError(f"Pillow is required to read image label grids from {path}") from error
     from knit_decode.parser_t_inverse.dataset import read_palette_mapping
+    from knit_decode.parser_t_inverse.palette import official_palette_mapping
 
     with Image.open(path) as image:
         image.load()
@@ -134,7 +135,14 @@ def load_label_grid(path: str | Path) -> list[list[int]]:
     palette_path = path.parent.parent / "palette_mapping.json"
     if not palette_path.exists():
         palette_path = Path("dataset2/palette_mapping.json")
-    mapping = read_palette_mapping(palette_path)
+    if palette_path.exists():
+        mapping = read_palette_mapping(palette_path)
+    else:
+        mapping_payload = official_palette_mapping()
+        mapping = {
+            tuple(int(part) for part in key.split(",")): int(value) - 1
+            for key, value in mapping_payload.items()
+        }
     width, height = image.size
     grid: list[list[int]] = []
     for y_pos in range(height):
