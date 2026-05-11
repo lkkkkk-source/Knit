@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import cast
 
@@ -76,77 +77,186 @@ def _effective_modes(counts: list[int]) -> float:
     return 1.0 / max(denom, 1e-12)
 
 
-def _compute_epoch_metrics(torch: object, outputs: dict[str, object], batch: dict[str, object], losses: dict[str, float]) -> dict[str, float]:
+def _init_generated_metric_state() -> dict[str, object]:
+    return {
+        "sample_count": 0,
+        "fg_mask_iou_sum": 0.0,
+        "fg_label_acc_on_fg_sum": 0.0,
+        "foreground_label_ce_sum": 0.0,
+        "bbox_l1_sum": 0.0,
+        "row_projection_l1_sum": 0.0,
+        "col_projection_l1_sum": 0.0,
+        "adjacency_l1_sum": 0.0,
+        "grammar_l1_sum": 0.0,
+        "empty_count": 0,
+        "full_count": 0,
+        "fg_area_low_count": 0,
+        "fg_area_high_count": 0,
+        "low_label_diversity_count": 0,
+        "invalid_bbox_count": 0,
+        "valid_foreground_count": 0,
+        "fg_area_sum": 0.0,
+        "fg_area_min": float("inf"),
+        "fg_area_max": 0.0,
+        "fg_area_valid_low_sum": 0.0,
+        "fg_area_valid_high_sum": 0.0,
+        "label_diversity_sum": 0.0,
+        "label_diversity_min": float("inf"),
+        "label_diversity_max": 0.0,
+        "local_mode_counts": {},
+    }
+
+
+def _bbox_is_valid(bbox_pred: list[float]) -> bool:
+    if len(bbox_pred) < 10:
+        return False
+    x0, y0, x1, y1, w, h, center_x, center_y, area_ratio, aspect_ratio = bbox_pred[:10]
+    normalized_values = [x0, y0, x1, y1, w, h, center_x, center_y, area_ratio]
+    if not all(math.isfinite(float(value)) for value in normalized_values + [aspect_ratio]):
+        return False
+    if any(float(value) < 0.0 or float(value) > 1.0 for value in normalized_values):
+        return False
+    if float(w) <= 0.0 or float(h) <= 0.0:
+        return False
+    if float(aspect_ratio) <= 0.0:
+        return False
+    return True
+
+
+def _accumulate_generated_metrics(
+    torch: object,
+    metric_state: dict[str, object],
+    outputs: dict[str, object],
+    batch: dict[str, object],
+    losses: dict[str, float],
+    category_area_stats: dict[str, dict[str, float]],
+) -> None:
     fg_mask_prob = getattr(torch, "sigmoid")(outputs["fg_mask_logits"].detach().squeeze(1))
     fg_mask_pred = (fg_mask_prob >= 0.5).to(dtype=getattr(torch, "long"))
     fg_mask_target = batch["fg_mask20"].detach().to(dtype=getattr(torch, "long"))
     fg_target = batch["fg_y20"].detach()
     fg_label_pred = outputs["fg_label_logits"].detach().argmax(dim=1) + 1
-    fg_mask_float = fg_mask_target.to(dtype=getattr(torch, "float32"))
     inter = (fg_mask_pred * fg_mask_target).sum(dim=(1, 2)).to(dtype=getattr(torch, "float32"))
     union = ((fg_mask_pred + fg_mask_target) > 0).sum(dim=(1, 2)).to(dtype=getattr(torch, "float32"))
-    fg_mask_iou = (inter / union.clamp_min(1.0)).mean().item()
     fg_positions = fg_mask_target > 0
     fg_correct = ((fg_label_pred == fg_target) & fg_positions).sum().item()
     fg_total = fg_positions.sum().item()
+    fg_mask_iou = float((inter / union.clamp_min(1.0)).mean().item())
     label_acc = float(fg_correct) / float(max(1, fg_total))
     batch_size = int(batch["category_ids"].shape[0])
-    composed_background = 0
-    composed_foreground = 0
-    label_div_sum = 0.0
-    area_valid = 0.0
-    areas: list[float] = []
-    local_counts: dict[int, int] = {}
+    metric_state["sample_count"] = int(metric_state["sample_count"]) + batch_size
+    metric_state["fg_mask_iou_sum"] = float(metric_state["fg_mask_iou_sum"]) + fg_mask_iou * batch_size
+    metric_state["fg_label_acc_on_fg_sum"] = float(metric_state["fg_label_acc_on_fg_sum"]) + label_acc * batch_size
+    metric_state["foreground_label_ce_sum"] = float(metric_state["foreground_label_ce_sum"]) + float(losses["fg_ce"]) * batch_size
+    metric_state["bbox_l1_sum"] = float(metric_state["bbox_l1_sum"]) + float(losses["bbox"]) * batch_size
+    metric_state["row_projection_l1_sum"] = float(metric_state["row_projection_l1_sum"]) + float(losses["row"]) * batch_size
+    metric_state["col_projection_l1_sum"] = float(metric_state["col_projection_l1_sum"]) + float(losses["col"]) * batch_size
+    metric_state["adjacency_l1_sum"] = float(metric_state["adjacency_l1_sum"]) + float(losses["adj"]) * batch_size
+    metric_state["grammar_l1_sum"] = float(metric_state["grammar_l1_sum"]) + float(losses["grammar"]) * batch_size
+    local_counts = cast(dict[int, int], metric_state["local_mode_counts"])
     for index in range(batch_size):
         local_z = int(outputs["local_z"][index].item())
         local_counts[local_z] = local_counts.get(local_z, 0) + 1
         pred_mask = fg_mask_pred[index].cpu().tolist()
         pred_label = fg_label_pred[index].cpu().tolist()
         bbox_pred = [float(value) for value in outputs["bbox_pred"][index].detach().cpu().tolist()]
-        composed = compose_foreground(pred_mask, pred_label, bbox_pred)["composed_y20"]
+        _ = compose_foreground(pred_mask, pred_label, bbox_pred)["composed_y20"]
+        category = str(batch["categories"][index])
+        area_stats = category_area_stats.get(category, {})
+        valid_low = float(area_stats.get("valid_low", 0.0))
+        valid_high = float(area_stats.get("valid_high", 1.0))
         area = foreground_area(pred_mask)
-        areas.append(area)
+        label_diversity = float(label_diversity_on_fg(pred_label, pred_mask))
+        bbox_valid = _bbox_is_valid(bbox_pred)
+        is_empty = area <= 0.0
+        is_full = area >= 0.99
+        is_area_low = area < valid_low
+        is_area_high = area > valid_high
+        is_low_diversity = label_diversity <= 1.0
+        is_valid = not any([is_empty, is_full, is_area_low, is_area_high, is_low_diversity, not bbox_valid])
+        metric_state["fg_area_sum"] = float(metric_state["fg_area_sum"]) + area
+        metric_state["fg_area_min"] = min(float(metric_state["fg_area_min"]), area)
+        metric_state["fg_area_max"] = max(float(metric_state["fg_area_max"]), area)
+        metric_state["fg_area_valid_low_sum"] = float(metric_state["fg_area_valid_low_sum"]) + valid_low
+        metric_state["fg_area_valid_high_sum"] = float(metric_state["fg_area_valid_high_sum"]) + valid_high
+        metric_state["label_diversity_sum"] = float(metric_state["label_diversity_sum"]) + label_diversity
+        metric_state["label_diversity_min"] = min(float(metric_state["label_diversity_min"]), label_diversity)
+        metric_state["label_diversity_max"] = max(float(metric_state["label_diversity_max"]), label_diversity)
         if area <= 0.0:
-            composed_background += 1
+            metric_state["empty_count"] = int(metric_state["empty_count"]) + 1
         if area >= 0.99:
-            composed_foreground += 1
-        if 0.0 < area < 0.99:
-            area_valid += 1.0
-        label_div_sum += float(label_diversity_on_fg(pred_label, pred_mask))
+            metric_state["full_count"] = int(metric_state["full_count"]) + 1
+        if is_area_low:
+            metric_state["fg_area_low_count"] = int(metric_state["fg_area_low_count"]) + 1
+        if is_area_high:
+            metric_state["fg_area_high_count"] = int(metric_state["fg_area_high_count"]) + 1
+        if is_low_diversity:
+            metric_state["low_label_diversity_count"] = int(metric_state["low_label_diversity_count"]) + 1
+        if not bbox_valid:
+            metric_state["invalid_bbox_count"] = int(metric_state["invalid_bbox_count"]) + 1
+        if is_valid:
+            metric_state["valid_foreground_count"] = int(metric_state["valid_foreground_count"]) + 1
+
+
+def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, float]:
+    sample_count = int(metric_state["sample_count"])
+    denom = float(max(1, sample_count))
+    local_counts = cast(dict[int, int], metric_state["local_mode_counts"])
     mode_hist = [local_counts[key] for key in sorted(local_counts)]
-    return {
-        "fg_mask_iou": float(fg_mask_iou),
-        "fg_label_acc_on_fg": float(label_acc),
-        "foreground_label_ce": float(losses["fg_ce"]),
-        "empty_foreground_rate": float(composed_background) / float(max(1, batch_size)),
-        "full_foreground_rate": float(composed_foreground) / float(max(1, batch_size)),
-        "valid_foreground_rate": float(area_valid) / float(max(1, batch_size)),
+    metrics = {
+        "fg_mask_iou": float(metric_state["fg_mask_iou_sum"]) / denom,
+        "fg_label_acc_on_fg": float(metric_state["fg_label_acc_on_fg_sum"]) / denom,
+        "foreground_label_ce": float(metric_state["foreground_label_ce_sum"]) / denom,
+        "empty_foreground_rate": float(metric_state["empty_count"]) / denom,
+        "full_foreground_rate": float(metric_state["full_count"]) / denom,
+        "fg_area_low_rate": float(metric_state["fg_area_low_count"]) / denom,
+        "fg_area_high_rate": float(metric_state["fg_area_high_count"]) / denom,
+        "low_label_diversity_rate": float(metric_state["low_label_diversity_count"]) / denom,
+        "invalid_bbox_rate": float(metric_state["invalid_bbox_count"]) / denom,
+        "valid_foreground_rate": float(metric_state["valid_foreground_count"]) / denom,
         "local_z_entropy": float(_safe_entropy(mode_hist)),
         "effective_local_modes": float(_effective_modes(mode_hist)),
         "sampled_unique_local_z_count": float(len(local_counts)),
-        "bbox_l1": float(losses["bbox"]),
-        "row_projection_l1": float(losses["row"]),
-        "col_projection_l1": float(losses["col"]),
-        "adjacency_l1": float(losses["adj"]),
-        "grammar_l1": float(losses["grammar"]),
-        "label_diversity_on_fg": float(label_div_sum) / float(max(1, batch_size)),
-        "mean_fg_area": float(sum(areas) / float(max(1, len(areas)))),
+        "bbox_l1": float(metric_state["bbox_l1_sum"]) / denom,
+        "row_projection_l1": float(metric_state["row_projection_l1_sum"]) / denom,
+        "col_projection_l1": float(metric_state["col_projection_l1_sum"]) / denom,
+        "adjacency_l1": float(metric_state["adjacency_l1_sum"]) / denom,
+        "grammar_l1": float(metric_state["grammar_l1_sum"]) / denom,
+        "fg_area_mean": float(metric_state["fg_area_sum"]) / denom,
+        "fg_area_min": 0.0 if sample_count <= 0 else float(metric_state["fg_area_min"]),
+        "fg_area_max": 0.0 if sample_count <= 0 else float(metric_state["fg_area_max"]),
+        "fg_area_valid_low_mean": float(metric_state["fg_area_valid_low_sum"]) / denom,
+        "fg_area_valid_high_mean": float(metric_state["fg_area_valid_high_sum"]) / denom,
+        "label_diversity_mean": float(metric_state["label_diversity_sum"]) / denom,
+        "label_diversity_min": 0.0 if sample_count <= 0 else float(metric_state["label_diversity_min"]),
+        "label_diversity_max": 0.0 if sample_count <= 0 else float(metric_state["label_diversity_max"]),
     }
-
-
-def _merge_metric_sums(metric_sums: dict[str, float], metrics: dict[str, float]) -> None:
-    for key, value in metrics.items():
-        metric_sums[key] = metric_sums.get(key, 0.0) + float(value)
-
-
-def _finalize_metric_sums(metric_sums: dict[str, float], count: int) -> dict[str, float]:
-    return {key: value / float(max(1, count)) for key, value in metric_sums.items()}
+    for key, value in list(metrics.items()):
+        if key in {
+            "empty_foreground_rate",
+            "full_foreground_rate",
+            "fg_area_low_rate",
+            "fg_area_high_rate",
+            "low_label_diversity_rate",
+            "invalid_bbox_rate",
+            "valid_foreground_rate",
+            "fg_area_mean",
+            "fg_area_min",
+            "fg_area_max",
+            "fg_area_valid_low_mean",
+            "fg_area_valid_high_mean",
+            "label_diversity_mean",
+            "label_diversity_min",
+            "label_diversity_max",
+        }:
+            metrics[f"sampled_{key}"] = value
+    return metrics
 
 
 def _evaluate_loader(model: object, loader: object, device: object, torch: object, functional: object) -> dict[str, float]:
     model.eval()
-    metric_sums: dict[str, float] = {}
-    batch_count = 0
+    metric_state = _init_generated_metric_state()
+    category_area_stats = loader.dataset.cache_payload["category_foreground_area_stats"]
     with getattr(torch, "no_grad")():
         for batch in loader:
             local_z = batch["local_z"].to(device)
@@ -174,9 +284,8 @@ def _evaluate_loader(model: object, loader: object, device: object, torch: objec
                 "grammar": float(functional.l1_loss(outputs["grammar_signature_pred"], batch["grammar_signature"].to(device)).item()),
                 "adj": float(functional.l1_loss(outputs["adjacency_signature_pred"], batch["adjacency_signature"].to(device)).item()),
             }
-            _merge_metric_sums(metric_sums, _compute_epoch_metrics(torch, outputs, batch, losses))
-            batch_count += 1
-    return _finalize_metric_sums(metric_sums, batch_count)
+            _accumulate_generated_metrics(torch, metric_state, outputs, batch, losses, category_area_stats)
+    return _finalize_generated_metrics(metric_state)
 
 
 def _require_cache_payload_fields(cache_payload: dict[str, object], *, context: str) -> None:
@@ -247,15 +356,14 @@ def main(argv: list[str] | None = None) -> int:
     history: list[dict[str, object]] = []
     output_dir = Path(train_cf["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    best_metric_name = "val_valid_foreground_rate"
+    best_metric_name = "val_sampled_valid_foreground_rate"
     best_metric_value = float("-inf")
 
     for epoch in range(int(train_cf["epochs"])):
         print(f"\nepoch {epoch + 1}/{int(train_cf['epochs'])}")
         model.train()
         total_loss = 0.0
-        metric_sums: dict[str, float] = {}
-        batch_count = 0
+        metric_state = _init_generated_metric_state()
         for batch in train_loader:
             local_z = batch["local_z"].to(device)
             mode_mask = batch["mode_mask"].to(device)
@@ -307,18 +415,19 @@ def main(argv: list[str] | None = None) -> int:
                 "grammar": float(grammar_loss.item()),
                 "adj": float(adj_loss.item()),
             }
-            _merge_metric_sums(metric_sums, _compute_epoch_metrics(torch, outputs, batch, losses))
-            batch_count += 1
-            print_progress("fg-train", batch_count, len(train_loader), f"loss={total_loss / batch_count:.4f} fg_ce={losses['fg_ce']:.4f}")
+            _accumulate_generated_metrics(torch, metric_state, outputs, batch, losses, train_dataset.cache_payload["category_foreground_area_stats"])
+            current_count = int(metric_state["sample_count"])
+            batch_count = current_count / max(1, int(train_cf["batch_size"]))
+            print_progress("fg-train", int(min(len(train_loader), math.ceil(batch_count))), len(train_loader), f"loss={total_loss / max(1, int(metric_state['sample_count'])):.4f} fg_ce={losses['fg_ce']:.4f}")
         finish_progress()
-        train_summary = _finalize_metric_sums(metric_sums, batch_count)
+        train_summary = _finalize_generated_metrics(metric_state)
         if len(val_dataset) > 0:
             val_summary = _evaluate_loader(model, val_loader, device, torch, functional)
         else:
             val_summary = {}
         summary = {
             "epoch": epoch + 1,
-            "train_loss": total_loss / max(1, batch_count),
+            "train_loss": total_loss / float(max(1, len(train_loader))),
             **{f"train_{key}": value for key, value in train_summary.items()},
             **{f"val_{key}": value for key, value in val_summary.items()},
             "val_seen_count": len(val_dataset),
@@ -362,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_last_path = output_dir / "checkpoint_last.pt"
         getattr(torch, "save")(checkpoint_payload, checkpoint_last_path)
         print(f"saved checkpoint_last: {checkpoint_last_path}")
-        current_metric = float(summary.get("val_valid_foreground_rate", summary["train_valid_foreground_rate"]))
+        current_metric = float(summary.get("val_sampled_valid_foreground_rate", summary["train_sampled_valid_foreground_rate"]))
         if current_metric >= best_metric_value:
             best_metric_value = current_metric
             checkpoint_payload["best_metric_value"] = best_metric_value

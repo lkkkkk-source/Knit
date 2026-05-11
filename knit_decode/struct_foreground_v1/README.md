@@ -27,6 +27,28 @@ python -m knit_decode.struct_foreground_v1.sample_foreground_candidates --config
 python -m knit_decode.struct_foreground_v1.eval_foreground_structure --config knit_decode/struct_foreground_v1/configs/foreground_v1.yaml --samples-dir knit_decode/struct_foreground_v1/runs/foreground_planner_v1/samples/Cable1
 ```
 
+Inspect foreground cache
+
+```bash
+python -m knit_decode.struct_foreground_v1.inspect_foreground_cache \
+  --cache knit_decode/struct_foreground_v1/cache/foreground_v1/foreground_cache_train.pt \
+  --category Cable1 \
+  --num-samples 64
+
+python -m knit_decode.struct_foreground_v1.inspect_foreground_cache \
+  --cache knit_decode/struct_foreground_v1/cache/foreground_v1/foreground_cache_train.pt \
+  --category Cable2 \
+  --num-samples 64
+```
+
+Interpretation:
+
+1. If `real_fg_y20` itself is a solid block, the instruction17 foreground labels do not contain enough internal Cable structure.
+2. If `real_fg_y20` has structure but `centroid_masks` are still blobs, the descriptor/KMeans/centroid design is the likely problem.
+3. If both `real_fg_y20` and centroids have structure but model-generated foreground is fragmented, the planner training/conditioning path is the likely problem.
+4. If the foreground mask itself is fragmented, add connected-component or compactness diagnostics before changing the planner.
+5. Do not judge only from `composed_y20`; inspect the canonical foreground crop first.
+
 Notes:
 
 - train cache is saved as `foreground_cache_train.pt`
