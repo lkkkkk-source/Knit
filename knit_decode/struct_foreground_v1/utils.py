@@ -520,6 +520,22 @@ def descriptor_stats_by_category(items: list[dict[str, object]], categories: lis
     return descriptors_by_category, descriptor_mean_by_category, descriptor_std_by_category, category_foreground_area_stats
 
 
+def descriptor_global_stats(items: list[dict[str, object]]) -> tuple[list[float], list[float]]:
+    descs = [item["descriptor"] for item in items if not item.get("is_empty_foreground", False)]
+    if not descs:
+        return [], []
+    dim = len(descs[0])
+    means: list[float] = []
+    stds: list[float] = []
+    for dim_index in range(dim):
+        values = [float(descriptor[dim_index]) for descriptor in descs]
+        mean_value = sum(values) / float(len(values))
+        std_value = (sum((value - mean_value) ** 2 for value in values) / float(max(1, len(values)))) ** 0.5
+        means.append(mean_value)
+        stds.append(max(std_value, 1e-6))
+    return means, stds
+
+
 def normalized_l2(descriptor: list[float], mean: list[float], std: list[float]) -> float:
     if not mean or not std:
         return float("inf")

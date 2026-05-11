@@ -53,6 +53,11 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     torch = _require_torch()
     cache_payload = torch.load(Path(config["data"]["cache_dir"]) / "foreground_cache_train.pt", map_location="cpu")
+    if "descriptor_global_mean" not in cache_payload or "descriptor_global_std" not in cache_payload:
+        raise ValueError(
+            "Foreground train cache is missing descriptor_global_mean / descriptor_global_std. "
+            "Please rebuild the train foreground cache with the current build_foreground_cache.py."
+        )
     if "category_foreground_area_stats" not in cache_payload:
         raise ValueError(
             "Foreground cache is missing category_foreground_area_stats. "

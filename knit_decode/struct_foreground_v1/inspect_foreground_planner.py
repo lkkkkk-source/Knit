@@ -66,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
     category_id = int(category_to_id[args.category])
     train_cache_path = Path(config["data"]["cache_dir"]) / "foreground_cache_train.pt"
     cache_payload = _require_torch().load(train_cache_path, map_location="cpu")
+    if "descriptor_global_mean" not in cache_payload or "descriptor_global_std" not in cache_payload:
+        raise ValueError(
+            "Foreground train cache is missing descriptor_global_mean / descriptor_global_std. "
+            "Please rebuild the train foreground cache with the current build_foreground_cache.py."
+        )
     grammar_dim = _checkpoint_dim(payload, metrics, "grammar_signature_dim", "grammar_head.weight")
     adjacency_dim = _checkpoint_dim(payload, metrics, "adjacency_signature_dim", "adj_head.weight")
     bbox_dim = _checkpoint_dim(payload, metrics, "bbox_dim", "bbox_head.weight")

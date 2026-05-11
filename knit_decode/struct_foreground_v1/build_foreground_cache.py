@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_stats_by_category, finish_progress, foreground_descriptor, format_metric_line, load_config, print_progress
+from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_global_stats, descriptor_stats_by_category, finish_progress, foreground_descriptor, format_metric_line, load_config, print_progress
 
 
 def _require_sklearn() -> object:
@@ -110,10 +110,14 @@ def main(argv: list[str] | None = None) -> int:
     descriptor_std_by_category: dict[str, list[float]] = {}
     category_foreground_area_stats: dict[str, dict[str, float]] = {}
 
+    descriptor_global_mean: list[float] = []
+    descriptor_global_std: list[float] = []
+
     if args.fit_kmeans:
         sklearn_cluster = _require_sklearn()
         cluster_cls = getattr(sklearn_cluster, "MiniBatchKMeans")
         descriptors_by_category_stats, descriptor_mean_by_category, descriptor_std_by_category, category_foreground_area_stats = descriptor_stats_by_category(items, sorted({item["category"] for item in items}))
+        descriptor_global_mean, descriptor_global_std = descriptor_global_stats(items)
         for category, descs in descriptors_by_category.items():
             samples_c = nondegenerate_by_category[category]
             k_c = min(num_modes_per_category, max(2, math.floor(len(samples_c) / max(1, min_samples_per_mode))))
@@ -137,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
         descriptors_by_category_stats = source_payload["descriptors_by_category"]
         descriptor_mean_by_category = source_payload["descriptor_mean_by_category"]
         descriptor_std_by_category = source_payload["descriptor_std_by_category"]
+        descriptor_global_mean = source_payload["descriptor_global_mean"]
+        descriptor_global_std = source_payload["descriptor_global_std"]
         category_foreground_area_stats = source_payload["category_foreground_area_stats"]
         global_centers = []
         for centers in category_kmeans_centers.values():
@@ -201,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
         "descriptors_by_category": descriptors_by_category_stats,
         "descriptor_mean_by_category": descriptor_mean_by_category,
         "descriptor_std_by_category": descriptor_std_by_category,
+        "descriptor_global_mean": descriptor_global_mean,
+        "descriptor_global_std": descriptor_global_std,
         "category_foreground_area_stats": category_foreground_area_stats,
         "centroid_sketch_by_category": centroid_sketch_by_category,
         "descriptor_slices": descriptor_slices or {},
