@@ -128,6 +128,23 @@ class ForegroundDataset:
         centroid = self.cache_payload["centroid_sketch_by_category"].get(category, {}).get(local_z, {})
         if not centroid:
             raise ValueError(f"Missing centroid sketch for sample_id={sample['sample_id']} category={category!r} local_z={local_z}.")
+        if "centroid_fg_mask_prob" not in centroid or "centroid_fg_mask" not in centroid:
+            raise ValueError(
+                f"Centroid sketch for sample_id={sample['sample_id']} category={category!r} local_z={local_z} "
+                "is missing centroid_fg_mask_prob / centroid_fg_mask. Please rebuild the cache."
+            )
+        centroid_fg_mask_prob = centroid.get("centroid_fg_mask_prob")
+        centroid_fg_mask_bin = centroid.get("centroid_fg_mask")
+        if hasattr(centroid_fg_mask_prob, "tolist"):
+            centroid_fg_mask_prob = centroid_fg_mask_prob.tolist()
+        if hasattr(centroid_fg_mask_bin, "tolist"):
+            centroid_fg_mask_bin = centroid_fg_mask_bin.tolist()
+        if not isinstance(centroid_fg_mask_prob, list) or len(centroid_fg_mask_prob) != 20 or any(not isinstance(row, list) or len(row) != 20 for row in centroid_fg_mask_prob):
+            raise ValueError(f"centroid_fg_mask_prob for sample_id={sample['sample_id']} must have shape [20,20].")
+        if not isinstance(centroid_fg_mask_bin, list) or len(centroid_fg_mask_bin) != 20 or any(not isinstance(row, list) or len(row) != 20 for row in centroid_fg_mask_bin):
+            raise ValueError(f"centroid_fg_mask for sample_id={sample['sample_id']} must have shape [20,20].")
+        if sum(int(value) for row in centroid_fg_mask_bin for value in row) <= 0:
+            raise ValueError(f"centroid_fg_mask for sample_id={sample['sample_id']} category={category!r} local_z={local_z} is all-zero.")
         return {
             "sample_id": str(sample["sample_id"]),
             "category": str(category),
@@ -144,7 +161,8 @@ class ForegroundDataset:
             "adjacency_signature": getattr(torch, "tensor")(cached["adjacency_signature"], dtype=getattr(torch, "float32")),
             "descriptor": getattr(torch, "tensor")(cached["descriptor"], dtype=getattr(torch, "float32")),
             "fg_area": getattr(torch, "tensor")(float(cached["fg_area"]), dtype=getattr(torch, "float32")),
-            "centroid_fg_mask": getattr(torch, "tensor")(centroid.get("centroid_fg_mask", [[0.0] * 20 for _ in range(20)]), dtype=getattr(torch, "float32")),
+            "centroid_fg_mask_prob": getattr(torch, "tensor")(centroid_fg_mask_prob, dtype=getattr(torch, "float32")),
+            "centroid_fg_mask_bin": getattr(torch, "tensor")(centroid_fg_mask_bin, dtype=getattr(torch, "float32")),
             "centroid_label_hist": getattr(torch, "tensor")(centroid.get("centroid_label_hist", [0.0] * 16), dtype=getattr(torch, "float32")),
             "centroid_row_projection": getattr(torch, "tensor")(centroid.get("centroid_row_projection", [0.0] * 20), dtype=getattr(torch, "float32")),
             "centroid_col_projection": getattr(torch, "tensor")(centroid.get("centroid_col_projection", [0.0] * 20), dtype=getattr(torch, "float32")),
@@ -174,7 +192,8 @@ def collate_batch(batch: list[dict[str, object]]) -> dict[str, object]:
         "adjacency_signature": getattr(torch, "stack")([sample["adjacency_signature"] for sample in batch]),
         "descriptor": getattr(torch, "stack")([sample["descriptor"] for sample in batch]),
         "fg_area": getattr(torch, "stack")([sample["fg_area"] for sample in batch]),
-        "centroid_fg_mask": getattr(torch, "stack")([sample["centroid_fg_mask"] for sample in batch]),
+        "centroid_fg_mask_prob": getattr(torch, "stack")([sample["centroid_fg_mask_prob"] for sample in batch]),
+        "centroid_fg_mask_bin": getattr(torch, "stack")([sample["centroid_fg_mask_bin"] for sample in batch]),
         "centroid_label_hist": getattr(torch, "stack")([sample["centroid_label_hist"] for sample in batch]),
         "centroid_row_projection": getattr(torch, "stack")([sample["centroid_row_projection"] for sample in batch]),
         "centroid_col_projection": getattr(torch, "stack")([sample["centroid_col_projection"] for sample in batch]),

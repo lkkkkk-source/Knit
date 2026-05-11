@@ -203,9 +203,20 @@ def main(argv: list[str] | None = None) -> int:
                 mode_samples = [sample for sample in samples if int(sample["local_z"]) == mode_index]
                 if not mode_samples:
                     continue
-                fg_mask_mean = [[sum(int(sample["fg_mask20"][y_pos][x_pos]) for sample in mode_samples) / float(len(mode_samples)) for x_pos in range(20)] for y_pos in range(20)]
+                fg_mask_prob = [[sum(float(sample["fg_mask20"][y_pos][x_pos]) for sample in mode_samples) / float(len(mode_samples)) for x_pos in range(20)] for y_pos in range(20)]
+                threshold = 0.5
+                centroid_fg_mask = [[1 if float(fg_mask_prob[y_pos][x_pos]) >= threshold else 0 for x_pos in range(20)] for y_pos in range(20)]
+                fallback_used = False
+                if sum(sum(row) for row in centroid_fg_mask) <= 0:
+                    threshold = max(0.1, sum(sum(row) for row in fg_mask_prob) / 400.0)
+                    centroid_fg_mask = [[1 if float(fg_mask_prob[y_pos][x_pos]) >= threshold else 0 for x_pos in range(20)] for y_pos in range(20)]
+                    fallback_used = True
                 centroid_sketch_by_category[category][mode_index] = {
-                    "centroid_fg_mask": fg_mask_mean,
+                    "centroid_fg_mask_prob": fg_mask_prob,
+                    "centroid_fg_mask": centroid_fg_mask,
+                    "centroid_fg_mask_threshold": float(threshold),
+                    "fallback_used": bool(fallback_used),
+                    "num_samples": int(len(mode_samples)),
                     "centroid_label_hist": [sum(float(sample["label_hist_16"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(16)],
                     "centroid_row_projection": [sum(float(sample["row_projection"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(20)],
                     "centroid_col_projection": [sum(float(sample["col_projection"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(20)],

@@ -127,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
             centroid = centroid_source.get(mode_index)
             if centroid is None:
                 raise ValueError(f"Missing centroid sketch for category={args.category!r} local_z={mode_index}.")
+            if "centroid_fg_mask_prob" not in centroid:
+                raise ValueError("Foreground cache is missing centroid_fg_mask_prob. Please rebuild the cache with the current build_foreground_cache.py.")
             centroid_label_hist.append(centroid["centroid_label_hist"])
             centroid_row_projection.append(centroid["centroid_row_projection"])
             centroid_col_projection.append(centroid["centroid_col_projection"])

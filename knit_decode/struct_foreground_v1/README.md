@@ -48,6 +48,8 @@ Interpretation:
 3. If both `real_fg_y20` and centroids have structure but model-generated foreground is fragmented, the planner training/conditioning path is the likely problem.
 4. If the foreground mask itself is fragmented, add connected-component or compactness diagnostics before changing the planner.
 5. Do not judge only from `composed_y20`; inspect the canonical foreground crop first.
+6. `centroid_fg_mask_prob` is the cluster foreground occupancy probability map, while `centroid_fg_mask` is the thresholded binary mask.
+7. Planner conditioning continues to use internal centroid statistics; cache inspection should compare both probability and binary centroid masks.
 
 Notes:
 
