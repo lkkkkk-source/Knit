@@ -256,7 +256,7 @@ def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, fl
     return metrics
 
 
-def _evaluate_loader(model: object, loader: object, device: object, torch: object, functional: object) -> dict[str, float]:
+def _evaluate_loader(model: object, loader: object, device: object, torch: object, functional: object, ignore_index: int) -> dict[str, float]:
     model.eval()
     metric_state = _init_generated_metric_state()
     category_area_stats = loader.dataset.cache_payload["category_foreground_area_stats"]
@@ -312,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     planner_cf = config["planner"]
     train_cf = config["train"]
     canonical_mode = resolve_canonical_mode(data_cf)
-    ignore_index = require_ignore_index(data_cf)
+    ignore_index = int(data_cf.get("ignore_index", -100))
     loss_weights = cast(dict[str, float], train_cf.get("loss_weights", {}))
     train_manifest = Path(data_cf["train_manifest"])
     val_manifest = Path(data_cf["val_manifest"])
@@ -372,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         model.train()
         total_loss = 0.0
         metric_state = _init_generated_metric_state()
+        batch_step_count = 0
         for batch in train_loader:
             local_z = batch["local_z"].to(device)
             mode_mask = batch["mode_mask"].to(device)
@@ -418,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
             loss.backward()
             optimizer.step()
             total_loss += float(loss.item())
+            batch_step_count += 1
             losses = {
                 "fg_ce": float(fg_ce.item()),
                 "bbox": float(bbox_loss.item()),
@@ -430,11 +432,11 @@ def main(argv: list[str] | None = None) -> int:
             _accumulate_generated_metrics(torch, metric_state, outputs, batch, losses, train_dataset.cache_payload["category_foreground_area_stats"])
             current_count = int(metric_state["sample_count"])
             batch_count = current_count / max(1, int(train_cf["batch_size"]))
-            print_progress("fg-train", int(min(len(train_loader), math.ceil(batch_count))), len(train_loader), f"loss={total_loss / max(1, int(metric_state['sample_count'])):.4f} fg_ce={losses['fg_ce']:.4f}")
+            print_progress("fg-train", int(min(len(train_loader), math.ceil(batch_count))), len(train_loader), f"loss={total_loss / max(1, batch_step_count):.4f} fg_ce={losses['fg_ce']:.4f}")
         finish_progress()
         train_summary = _finalize_generated_metrics(metric_state)
         if len(val_dataset) > 0:
-            val_summary = _evaluate_loader(model, val_loader, device, torch, functional)
+            val_summary = _evaluate_loader(model, val_loader, device, torch, functional, ignore_index)
         else:
             val_summary = {}
         summary = {
