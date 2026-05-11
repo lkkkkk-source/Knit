@@ -18,6 +18,15 @@ train:
   batch_size: 32
   learning_rate: 0.0001
   weight_decay: 0.0001
+  loss_weights:
+    local_z: 1.0
+    fg_mask: 1.0
+    fg_label: 1.0
+    bbox: 1.0
+    row_projection: 1.0
+    col_projection: 1.0
+    grammar_signature: 1.0
+    adjacency: 1.0
   device: cpu
   num_workers: 4
   pin_memory: false

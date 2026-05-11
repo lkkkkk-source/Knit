@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_global_stats, descriptor_stats_by_category, finish_progress, foreground_descriptor, format_metric_line, load_config, print_progress
+from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_foreground_cache_fields, resolve_manifest_path, validate_foreground_labels
 
 
 def _require_sklearn() -> object:
@@ -39,9 +39,20 @@ def _load_manifest(path: Path) -> list[dict[str, object]]:
 def _infer_manifest_root(manifest_path: Path, rows: list[dict[str, object]]) -> Path:
     search_roots = [manifest_path.parent, *manifest_path.parents]
     for candidate_root in search_roots:
-        if all((candidate_root / str(row["target_path"])).exists() for row in rows[: min(4, len(rows))]):
+        if all((candidate_root / str(row["target_path"])).exists() for row in rows[: min(32, len(rows))] if isinstance(row.get("target_path"), str)):
             return candidate_root
     return manifest_path.parent
+
+
+def _default_output_path(output_dir: Path, split_name: str) -> Path:
+    split_lower = split_name.lower()
+    if "train" in split_lower:
+        return output_dir / "foreground_cache_train.pt"
+    if "val" in split_lower:
+        return output_dir / "foreground_cache_val.pt"
+    if "test" in split_lower:
+        return output_dir / "foreground_cache_test.pt"
+    return output_dir / f"{split_name}.pt"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -53,7 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = Path(args.manifest or data_cf["train_manifest"])
     output_dir = Path(data_cf["cache_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = Path(args.output or (output_dir / f"{manifest_path.stem}.pt"))
+    split_name = manifest_path.stem.lower()
+    output_path = Path(args.output or _default_output_path(output_dir, manifest_path.stem))
     rows = _load_manifest(manifest_path)
     manifest_root = _infer_manifest_root(manifest_path, rows)
     total = len(rows)
@@ -64,13 +76,16 @@ def main(argv: list[str] | None = None) -> int:
     from .utils import load_label_grid
 
     for index, row in enumerate(rows, start=1):
-        target_path = Path(str(row["target_path"]))
-        if not target_path.is_absolute():
-            target_path = (manifest_root / target_path).resolve()
-        y20 = load_label_grid(target_path)
+        sample_id = str(row["sample_id"])
+        target_path = resolve_manifest_path(row["target_path"], manifest_root, sample_id=sample_id, field_name="target_path")
+        _ = resolve_manifest_path(row["input_path"], manifest_root, sample_id=sample_id, field_name="input_path")
+        _ = resolve_manifest_path(row["index_path"], manifest_root, sample_id=sample_id, field_name="index_path")
+        y20 = load_label_grid(target_path, sample_id=sample_id)
         canonical = canonicalize_foreground(y20, background_class_id=int(data_cf["background_class_id"]), canonical_size=int(data_cf["canonical_size"]))
         descriptor = foreground_descriptor(canonical["fg_y20"], canonical["fg_mask20"], canonical["bbox"])
-        fg_area = sum(int(value) for row_fg in canonical["fg_mask20"] for value in row_fg) / float(max(1, int(data_cf["canonical_size"]) * int(data_cf["canonical_size"])))
+        validate_foreground_labels(canonical["fg_y20"], canonical["fg_mask20"], canonical_size=int(data_cf["canonical_size"]), context=f"cache[{sample_id}]")
+        ensure_descriptor_dim(descriptor["descriptor"], context=f"cache[{sample_id}]")
+        fg_area = foreground_area(canonical["fg_mask20"])
         item = {
             "sample_id": row["sample_id"],
             "category": row["category"],
@@ -94,12 +109,15 @@ def main(argv: list[str] | None = None) -> int:
         print_progress("fg-cache", index, total, f"empty={int(item['is_empty_foreground'])}")
     finish_progress()
 
-    split_name = manifest_path.stem.lower()
     is_train_like = "train" in split_name
     if is_train_like and not args.fit_kmeans:
         raise ValueError("Train foreground cache build requires --fit-kmeans.")
+    if is_train_like and args.kmeans_source_cache is not None:
+        raise ValueError("Train foreground cache build must not use --kmeans-source-cache; use --fit-kmeans only.")
     if (not is_train_like) and args.fit_kmeans:
         raise ValueError("Validation/test foreground cache must not refit KMeans; use --kmeans-source-cache.")
+    if (not is_train_like) and args.kmeans_source_cache is None:
+        raise ValueError("Validation/test foreground cache requires --kmeans-source-cache from the train foreground cache.")
 
     num_modes_per_category = int(planner_cf["num_modes_per_category"])
     min_samples_per_mode = int(planner_cf["min_samples_per_mode"])
@@ -109,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     descriptor_mean_by_category: dict[str, list[float]] = {}
     descriptor_std_by_category: dict[str, list[float]] = {}
     category_foreground_area_stats: dict[str, dict[str, float]] = {}
+    centroid_sketch_by_category: dict[str, dict[int, dict[str, object]]] = {}
 
     descriptor_global_mean: list[float] = []
     descriptor_global_std: list[float] = []
@@ -136,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         torch = __import__("torch")
         source_payload = torch.load(Path(args.kmeans_source_cache), map_location="cpu")
+        require_foreground_cache_fields(source_payload, context="Source train foreground cache")
         category_kmeans_centers = source_payload["category_kmeans_centers"]
         category_to_num_modes = source_payload["category_to_num_modes"]
         descriptors_by_category_stats = source_payload["descriptors_by_category"]
@@ -144,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         descriptor_global_mean = source_payload["descriptor_global_mean"]
         descriptor_global_std = source_payload["descriptor_global_std"]
         category_foreground_area_stats = source_payload["category_foreground_area_stats"]
+        centroid_sketch_by_category = source_payload["centroid_sketch_by_category"]
         global_centers = []
         for centers in category_kmeans_centers.values():
             global_centers.extend(centers)
@@ -173,28 +194,29 @@ def main(argv: list[str] | None = None) -> int:
                     item["local_z"] = 0
                 item["num_modes_for_category"] = num_modes_per_category
 
-    centroid_sketch_by_category: dict[str, dict[int, dict[str, object]]] = {}
-    for category, samples in nondegenerate_by_category.items():
-        num_modes_c = int(category_to_num_modes.get(category, 1))
-        centroid_sketch_by_category[category] = {}
-        for mode_index in range(num_modes_c):
-            mode_samples = [sample for sample in samples if int(sample["local_z"]) == mode_index]
-            if not mode_samples:
-                continue
-            fg_mask_mean = [[sum(int(sample["fg_mask20"][y_pos][x_pos]) for sample in mode_samples) / float(len(mode_samples)) for x_pos in range(20)] for y_pos in range(20)]
-            centroid_sketch_by_category[category][mode_index] = {
-                "centroid_fg_mask": fg_mask_mean,
-                "centroid_label_hist": [sum(float(sample["label_hist_16"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(16)],
-                "centroid_row_projection": [sum(float(sample["row_projection"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(20)],
-                "centroid_col_projection": [sum(float(sample["col_projection"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(20)],
-                "centroid_adjacency": [sum(float(sample["adjacency_signature"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(256)],
-                "centroid_transition_stats": [sum(float(sample["transition_2x2_stats"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(len(mode_samples[0]["transition_2x2_stats"]))],
-                "centroid_bbox_stats": [sum(float(sample["bbox_stats"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(len(mode_samples[0]["bbox_stats"]))],
-                "nearest_train_sample_id": str(mode_samples[0]["sample_id"]),
-            }
+    if args.fit_kmeans:
+        for category, samples in nondegenerate_by_category.items():
+            num_modes_c = int(category_to_num_modes.get(category, 1))
+            centroid_sketch_by_category[category] = {}
+            for mode_index in range(num_modes_c):
+                mode_samples = [sample for sample in samples if int(sample["local_z"]) == mode_index]
+                if not mode_samples:
+                    continue
+                fg_mask_mean = [[sum(int(sample["fg_mask20"][y_pos][x_pos]) for sample in mode_samples) / float(len(mode_samples)) for x_pos in range(20)] for y_pos in range(20)]
+                centroid_sketch_by_category[category][mode_index] = {
+                    "centroid_fg_mask": fg_mask_mean,
+                    "centroid_label_hist": [sum(float(sample["label_hist_16"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(16)],
+                    "centroid_row_projection": [sum(float(sample["row_projection"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(20)],
+                    "centroid_col_projection": [sum(float(sample["col_projection"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(20)],
+                    "centroid_adjacency": [sum(float(sample["adjacency_signature"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(256)],
+                    "centroid_transition_stats": [sum(float(sample["transition_2x2_stats"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(len(mode_samples[0]["transition_2x2_stats"]))],
+                    "centroid_bbox_stats": [sum(float(sample["bbox_stats"][index]) for sample in mode_samples) / float(len(mode_samples)) for index in range(len(mode_samples[0]["bbox_stats"]))],
+                    "nearest_train_sample_id": str(mode_samples[0]["sample_id"]),
+                }
     payload = {
         "meta": {
             "manifest": str(manifest_path),
+            "manifest_root": str(manifest_root),
             "canonical_size": int(data_cf["canonical_size"]),
             "background_class_id": int(data_cf["background_class_id"]),
             "ignore_index": IGNORE_INDEX,

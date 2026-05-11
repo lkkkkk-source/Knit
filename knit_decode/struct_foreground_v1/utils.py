@@ -6,6 +6,15 @@ from pathlib import Path
 
 
 IGNORE_INDEX = -100
+EXPECTED_DESCRIPTOR_DIM = 329
+REQUIRED_FOREGROUND_CACHE_KEYS = (
+    "descriptors_by_category",
+    "descriptor_mean_by_category",
+    "descriptor_std_by_category",
+    "descriptor_global_mean",
+    "descriptor_global_std",
+    "category_foreground_area_stats",
+)
 
 
 def _require_torch() -> object:
@@ -39,6 +48,31 @@ def format_metric_line(prefix: str, items: list[tuple[str, object]]) -> str:
     return " ".join(parts)
 
 
+def checkpoint_get(payload: dict[str, object], key: str, *, required: bool = True) -> object:
+    if key in payload:
+        return payload[key]
+    metrics = payload.get("metrics", {})
+    if isinstance(metrics, dict) and key in metrics:
+        return metrics[key]
+    if required:
+        raise ValueError(f"Checkpoint is missing required metadata field {key!r}.")
+    return None
+
+
+def require_foreground_cache_fields(
+    cache_payload: dict[str, object],
+    *,
+    required_keys: tuple[str, ...] = REQUIRED_FOREGROUND_CACHE_KEYS,
+    context: str = "Foreground cache",
+) -> None:
+    missing = [key for key in required_keys if key not in cache_payload]
+    if missing:
+        raise ValueError(
+            f"{context} is missing required fields: {', '.join(missing)}. "
+            "Please rebuild the train foreground cache with the current build_foreground_cache.py."
+        )
+
+
 def print_progress(stage: str, current: int, total: int, extra: str = "") -> None:
     width = 30
     ratio = 0.0 if total <= 0 else current / total
@@ -67,14 +101,10 @@ def save_jsonl(path: str | Path, rows: list[dict[str, object]]) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def save_label_map(mask: list[list[int]], output_path: Path, scale: int = 1) -> None:
+def _label_image_from_grid(mask: list[list[int]]) -> object:
     from knit_decode.parser_t_inverse.palette import OFFICIAL_PALETTE
 
-    try:
-        from PIL import Image
-    except Exception:
-        save_json(output_path.with_suffix(".json"), mask)
-        return
+    from PIL import Image
     height = len(mask)
     width = len(mask[0]) if height else 0
     image = Image.new("P", (width, height))
@@ -86,10 +116,46 @@ def save_label_map(mask: list[list[int]], output_path: Path, scale: int = 1) -> 
         palette.extend(color)
     palette.extend([0] * (768 - len(palette)))
     image.putpalette(palette)
+    return image
+
+
+def save_label_map(mask: list[list[int]], output_path: Path, scale: int = 1) -> None:
+    try:
+        image = _label_image_from_grid(mask)
+    except Exception:
+        save_json(output_path.with_suffix(".json"), mask)
+        return
     if scale > 1:
+        from PIL import Image
+
+        width, height = image.size
         image = image.resize((width * scale, height * scale), resample=Image.Resampling.NEAREST)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)
+
+
+def save_label_grid_mosaic(grids: list[list[list[int]]], output_path: Path, *, columns: int = 4, scale: int = 1) -> None:
+    if not grids:
+        raise ValueError("save_label_grid_mosaic requires at least one grid.")
+    try:
+        from PIL import Image
+    except Exception:
+        save_json(output_path.with_suffix(".json"), {"columns": columns, "grids": grids})
+        return
+    images = [_label_image_from_grid(grid) for grid in grids]
+    tile_width, tile_height = images[0].size
+    columns = max(1, columns)
+    rows = (len(images) + columns - 1) // columns
+    mosaic = Image.new("P", (tile_width * columns, tile_height * rows))
+    mosaic.putpalette(images[0].getpalette())
+    for index, image in enumerate(images):
+        x_offset = (index % columns) * tile_width
+        y_offset = (index // columns) * tile_height
+        mosaic.paste(image, (x_offset, y_offset))
+    if scale > 1:
+        mosaic = mosaic.resize((mosaic.size[0] * scale, mosaic.size[1] * scale), resample=Image.Resampling.NEAREST)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    mosaic.save(output_path)
 
 
 def save_binary_map(mask: list[list[int]] | list[list[bool]], output_path: Path, scale: int = 1) -> None:
@@ -110,7 +176,20 @@ def save_binary_map(mask: list[list[int]] | list[list[bool]], output_path: Path,
     image.save(output_path)
 
 
-def load_label_grid(path: str | Path) -> list[list[int]]:
+def resolve_manifest_path(raw_path: str | Path, manifest_root: str | Path, *, sample_id: str, field_name: str) -> Path:
+    candidate = Path(str(raw_path))
+    if candidate.is_absolute():
+        resolved = candidate
+    else:
+        resolved = (Path(manifest_root) / candidate).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(
+            f"Missing {field_name} for sample_id={sample_id}: raw_path={raw_path!r} resolved_path={str(resolved)!r}"
+        )
+    return resolved
+
+
+def load_label_grid(path: str | Path, *, sample_id: str | None = None) -> list[list[int]]:
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix == ".pt":
@@ -129,14 +208,24 @@ def load_label_grid(path: str | Path) -> list[list[int]]:
     from knit_decode.parser_t_inverse.dataset import read_palette_mapping
     from knit_decode.parser_t_inverse.palette import official_palette_mapping
 
-    with Image.open(path) as image:
-        image.load()
-        image = image.convert("RGB")
+    try:
+        with Image.open(path) as image:
+            image.load()
+            image = image.convert("RGB")
+    except Exception as error:
+        sample_text = f" sample_id={sample_id}" if sample_id is not None else ""
+        raise ValueError(f"Failed to open label grid at {path}.{sample_text}") from error
     palette_path = path.parent.parent / "palette_mapping.json"
     if not palette_path.exists():
         palette_path = Path("dataset2/palette_mapping.json")
+    palette_source = "official_palette_mapping() fallback"
     if palette_path.exists():
-        mapping = read_palette_mapping(palette_path)
+        try:
+            mapping = read_palette_mapping(palette_path)
+            palette_source = str(palette_path)
+        except Exception as error:
+            sample_text = f" sample_id={sample_id}" if sample_id is not None else ""
+            raise ValueError(f"Failed to read palette mapping at {palette_path} for {path}.{sample_text}") from error
     else:
         mapping_payload = official_palette_mapping()
         mapping = {
@@ -149,6 +238,12 @@ def load_label_grid(path: str | Path) -> list[list[int]]:
         row: list[int] = []
         for x_pos in range(width):
             color = tuple(int(channel) for channel in image.getpixel((x_pos, y_pos)))
+            if color not in mapping:
+                sample_text = f" sample_id={sample_id}" if sample_id is not None else ""
+                raise ValueError(
+                    f"Unknown palette color {color} at ({x_pos}, {y_pos}) in {path}; "
+                    f"palette_source={palette_source}.{sample_text}"
+                )
             row.append(int(mapping[color]))
         grid.append(row)
     return grid
@@ -232,6 +327,7 @@ def canonicalize_foreground(grid20: list[list[int]], background_class_id: int, c
             if bool(resized_mask[y_pos, x_pos].item()):
                 fg_mask20[out_y][out_x] = 1
                 fg_y20[out_y][out_x] = int(resized_labels[y_pos, x_pos].item())
+    validate_foreground_labels(fg_y20, fg_mask20, canonical_size=canonical_size, context="canonicalize_foreground")
     return {
         "fg_y20": fg_y20,
         "fg_mask20": fg_mask20,
@@ -464,6 +560,55 @@ def fg_mask_iou(pred_mask: list[list[int]], target_mask: list[list[int]]) -> flo
     return inter / float(max(1, union))
 
 
+def foreground_area(mask: list[list[int]] | list[list[bool]]) -> float:
+    height = len(mask)
+    width = len(mask[0]) if height else 0
+    total = max(1, height * width)
+    return sum(1 for row in mask for value in row if bool(value)) / float(total)
+
+
+def label_diversity_on_fg(labels: list[list[int]], mask: list[list[int]] | list[list[bool]]) -> int:
+    values = {
+        int(labels[y_pos][x_pos])
+        for y_pos in range(len(labels))
+        for x_pos in range(len(labels[0]))
+        if bool(mask[y_pos][x_pos]) and 1 <= int(labels[y_pos][x_pos]) <= 16
+    }
+    return len(values)
+
+
+def validate_foreground_labels(
+    fg_y20: list[list[int]],
+    fg_mask20: list[list[int]] | list[list[bool]],
+    *,
+    canonical_size: int = 20,
+    context: str = "foreground",
+) -> None:
+    if len(fg_y20) != canonical_size or len(fg_mask20) != canonical_size:
+        raise ValueError(f"{context}: expected {canonical_size} rows for fg_y20 and fg_mask20.")
+    for row_index in range(canonical_size):
+        if len(fg_y20[row_index]) != canonical_size or len(fg_mask20[row_index]) != canonical_size:
+            raise ValueError(f"{context}: expected {canonical_size} columns for fg_y20 and fg_mask20.")
+        for col_index in range(canonical_size):
+            label_value = int(fg_y20[row_index][col_index])
+            mask_value = bool(fg_mask20[row_index][col_index])
+            if mask_value:
+                if not (1 <= label_value <= 16):
+                    raise ValueError(
+                        f"{context}: foreground pixel at ({row_index}, {col_index}) has invalid label {label_value}; expected 1..16."
+                    )
+            else:
+                if label_value != IGNORE_INDEX:
+                    raise ValueError(
+                        f"{context}: background pixel at ({row_index}, {col_index}) must be IGNORE_INDEX={IGNORE_INDEX}, got {label_value}."
+                    )
+
+
+def ensure_descriptor_dim(descriptor: list[float], *, context: str) -> None:
+    if len(descriptor) != EXPECTED_DESCRIPTOR_DIM:
+        raise ValueError(f"{context}: expected descriptor dim {EXPECTED_DESCRIPTOR_DIM}, got {len(descriptor)}.")
+
+
 def descriptor_stats_by_category(items: list[dict[str, object]], categories: list[str]) -> tuple[dict[str, list[list[float]]], dict[str, list[float]], dict[str, list[float]], dict[str, dict[str, float]]]:
     descriptors_by_category: dict[str, list[list[float]]] = {}
     descriptor_mean_by_category: dict[str, list[float]] = {}
@@ -471,6 +616,8 @@ def descriptor_stats_by_category(items: list[dict[str, object]], categories: lis
     category_foreground_area_stats: dict[str, dict[str, float]] = {}
     for category in categories:
         descs = [item["descriptor"] for item in items if item["category"] == category and not item["is_empty_foreground"]]
+        for descriptor in descs:
+            ensure_descriptor_dim(descriptor, context=f"descriptor_stats_by_category[{category}]")
         descriptors_by_category[category] = descs
         if not descs:
             descriptor_mean_by_category[category] = []
@@ -479,13 +626,15 @@ def descriptor_stats_by_category(items: list[dict[str, object]], categories: lis
                 "count": 0.0,
                 "mean": 0.0,
                 "std": 0.0,
+                "q01": 0.0,
                 "q05": 0.0,
                 "q10": 0.0,
                 "q50": 0.0,
                 "q90": 0.0,
                 "q95": 0.0,
-                "valid_low": 0.0,
-                "valid_high": 1.0,
+                "q99": 0.0,
+                "valid_low": 0.02,
+                "valid_high": 0.98,
             }
             continue
         dim = len(descs[0])
@@ -496,26 +645,30 @@ def descriptor_stats_by_category(items: list[dict[str, object]], categories: lis
             mean_value = sum(values) / float(len(values))
             std_value = (sum((value - mean_value) ** 2 for value in values) / float(max(1, len(values)))) ** 0.5
             means.append(mean_value)
-            stds.append(std_value if std_value > 1e-6 else 1.0)
+            stds.append(max(std_value, 1e-6))
         descriptor_mean_by_category[category] = means
         descriptor_std_by_category[category] = stds
-        areas = sorted(float(item["bbox_stats"][8]) for item in items if item["category"] == category and not item["is_empty_foreground"])
+        areas = sorted(float(item["fg_area"]) for item in items if item["category"] == category and not item["is_empty_foreground"])
+
         def _q(q: float) -> float:
             index = min(len(areas) - 1, max(0, int(round((len(areas) - 1) * q))))
             return areas[index]
+
         mean_area = sum(areas) / float(len(areas))
         std_area = (sum((value - mean_area) ** 2 for value in areas) / float(max(1, len(areas)))) ** 0.5
         category_foreground_area_stats[category] = {
             "count": float(len(areas)),
             "mean": mean_area,
             "std": std_area,
+            "q01": _q(0.01),
             "q05": _q(0.05),
             "q10": _q(0.10),
             "q50": _q(0.50),
             "q90": _q(0.90),
             "q95": _q(0.95),
-            "valid_low": max(0.01, _q(0.05) - 0.02),
-            "valid_high": min(0.99, _q(0.95) + 0.02),
+            "q99": _q(0.99),
+            "valid_low": max(0.02, _q(0.05) - 0.02),
+            "valid_high": min(0.98, _q(0.95) + 0.02),
         }
     return descriptors_by_category, descriptor_mean_by_category, descriptor_std_by_category, category_foreground_area_stats
 
@@ -524,6 +677,8 @@ def descriptor_global_stats(items: list[dict[str, object]]) -> tuple[list[float]
     descs = [item["descriptor"] for item in items if not item.get("is_empty_foreground", False)]
     if not descs:
         return [], []
+    for descriptor in descs:
+        ensure_descriptor_dim(descriptor, context="descriptor_global_stats")
     dim = len(descs[0])
     means: list[float] = []
     stds: list[float] = []
@@ -543,3 +698,15 @@ def normalized_l2(descriptor: list[float], mean: list[float], std: list[float]) 
     for value, mean_value, std_value in zip(descriptor, mean, std):
         total += ((float(value) - float(mean_value)) / max(float(std_value), 1e-6)) ** 2
     return math.sqrt(total / float(max(1, len(descriptor))))
+
+
+def normalized_l2_between(descriptor: list[float], reference: list[float], global_mean: list[float], global_std: list[float]) -> float:
+    if not reference or not global_mean or not global_std:
+        return float("inf")
+    total = 0.0
+    dim = min(len(descriptor), len(reference), len(global_mean), len(global_std))
+    for index in range(dim):
+        desc_value = (float(descriptor[index]) - float(global_mean[index])) / max(float(global_std[index]), 1e-6)
+        ref_value = (float(reference[index]) - float(global_mean[index])) / max(float(global_std[index]), 1e-6)
+        total += (desc_value - ref_value) ** 2
+    return math.sqrt(total / float(max(1, dim)))

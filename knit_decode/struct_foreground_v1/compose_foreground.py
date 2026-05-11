@@ -21,9 +21,16 @@ def compose_foreground(
     output_dir: str | Path | None = None,
     background_class_id: int = 0,
 ) -> dict[str, object]:
+    if len(fg_mask20) != 20 or len(fg_label20) != 20:
+        raise ValueError("compose_foreground expects 20x20 fg_mask20 and fg_label20.")
+    for row_index in range(20):
+        if len(fg_mask20[row_index]) != 20 or len(fg_label20[row_index]) != 20:
+            raise ValueError("compose_foreground expects 20x20 fg_mask20 and fg_label20.")
     torch = _require_torch()
     functional = __import__("importlib").import_module("torch.nn.functional")
     canvas = [[background_class_id for _ in range(20)] for _ in range(20)]
+    if len(bbox_pred) < 6:
+        raise ValueError(f"compose_foreground requires bbox_pred with at least 6 values, got {len(bbox_pred)}.")
     x0 = max(0, min(19, int(round(bbox_pred[0] * 20.0))))
     y0 = max(0, min(19, int(round(bbox_pred[1] * 20.0))))
     w = max(1, min(20, int(round(bbox_pred[4] * 20.0))))
@@ -38,8 +45,9 @@ def compose_foreground(
         for x_pos in range(x1 - x0 + 1):
             if float(resized_mask[y_pos, x_pos].item()) >= 0.5:
                 label_value = int(resized_label[y_pos, x_pos].item())
-                if 1 <= label_value <= 16:
-                    canvas[y0 + y_pos][x0 + x_pos] = label_value
+                if not (1 <= label_value <= 16):
+                    raise ValueError(f"compose_foreground produced invalid foreground label {label_value}; expected 1..16.")
+                canvas[y0 + y_pos][x0 + x_pos] = label_value
     result = {
         "composed_y20": canvas,
         "bbox": {

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import TypedDict, cast
 
-from .utils import IGNORE_INDEX
+from .utils import IGNORE_INDEX, EXPECTED_DESCRIPTOR_DIM, validate_foreground_labels
 
 
 class ForegroundSample(TypedDict):
@@ -60,7 +60,12 @@ class ForegroundDataset:
         manifest_ids = {sample["sample_id"] for sample in self.samples}
         cache_ids = set(self.cache_by_id)
         if manifest_ids != cache_ids:
-            raise ValueError("Manifest/cache sample_id mismatch in foreground dataset")
+            missing_in_cache = sorted(manifest_ids - cache_ids)
+            missing_in_manifest = sorted(cache_ids - manifest_ids)
+            raise ValueError(
+                f"Manifest/cache sample_id mismatch in foreground dataset: "
+                f"missing_in_cache={missing_in_cache[:5]} missing_in_manifest={missing_in_manifest[:5]}"
+            )
         for sample in self.samples:
             cached = self.cache_by_id[sample["sample_id"]]
             if cached["category"] != sample["category"]:
@@ -68,6 +73,12 @@ class ForegroundDataset:
             for key in ("input_path", "target_path", "index_path"):
                 if str(cached.get(key)) != str(sample[key]):
                     raise ValueError(f"Path mismatch for sample_id={sample['sample_id']} field={key}")
+            validate_foreground_labels(cached["fg_y20"], cached["fg_mask20"], context=f"dataset[{sample['sample_id']}]")
+            descriptor = cached.get("descriptor")
+            if not isinstance(descriptor, list) or len(descriptor) != EXPECTED_DESCRIPTOR_DIM:
+                raise ValueError(
+                    f"Descriptor mismatch for sample_id={sample['sample_id']}: expected dim {EXPECTED_DESCRIPTOR_DIM}, got {len(descriptor) if isinstance(descriptor, list) else type(descriptor)}"
+                )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -81,8 +92,16 @@ class ForegroundDataset:
             raise KeyError(f"Category {category!r} missing from category_to_id.")
         local_z = int(cached["local_z"])
         num_modes = int(cached["num_modes_for_category"])
+        if num_modes <= 0 or num_modes > self.max_num_modes_per_category:
+            raise ValueError(
+                f"Invalid num_modes_for_category for sample_id={sample['sample_id']}: {num_modes} not in [1, {self.max_num_modes_per_category}]"
+            )
+        if local_z < 0 or local_z >= num_modes:
+            raise ValueError(f"Invalid local_z for sample_id={sample['sample_id']}: local_z={local_z} num_modes={num_modes}")
         mode_mask = [1 if mode_index < num_modes else 0 for mode_index in range(self.max_num_modes_per_category)]
         centroid = self.cache_payload["centroid_sketch_by_category"].get(category, {}).get(local_z, {})
+        if not centroid:
+            raise ValueError(f"Missing centroid sketch for sample_id={sample['sample_id']} category={category!r} local_z={local_z}.")
         return {
             "sample_id": str(sample["sample_id"]),
             "category": str(category),
@@ -97,6 +116,8 @@ class ForegroundDataset:
             "col_projection": getattr(torch, "tensor")(cached["col_projection"], dtype=getattr(torch, "float32")),
             "grammar_signature": getattr(torch, "tensor")(cached["grammar_signature"], dtype=getattr(torch, "float32")),
             "adjacency_signature": getattr(torch, "tensor")(cached["adjacency_signature"], dtype=getattr(torch, "float32")),
+            "descriptor": getattr(torch, "tensor")(cached["descriptor"], dtype=getattr(torch, "float32")),
+            "fg_area": getattr(torch, "tensor")(float(cached["fg_area"]), dtype=getattr(torch, "float32")),
             "centroid_fg_mask": getattr(torch, "tensor")(centroid.get("centroid_fg_mask", [[0.0] * 20 for _ in range(20)]), dtype=getattr(torch, "float32")),
             "centroid_label_hist": getattr(torch, "tensor")(centroid.get("centroid_label_hist", [0.0] * 16), dtype=getattr(torch, "float32")),
             "centroid_row_projection": getattr(torch, "tensor")(centroid.get("centroid_row_projection", [0.0] * 20), dtype=getattr(torch, "float32")),
@@ -125,6 +146,8 @@ def collate_batch(batch: list[dict[str, object]]) -> dict[str, object]:
         "col_projection": getattr(torch, "stack")([sample["col_projection"] for sample in batch]),
         "grammar_signature": getattr(torch, "stack")([sample["grammar_signature"] for sample in batch]),
         "adjacency_signature": getattr(torch, "stack")([sample["adjacency_signature"] for sample in batch]),
+        "descriptor": getattr(torch, "stack")([sample["descriptor"] for sample in batch]),
+        "fg_area": getattr(torch, "stack")([sample["fg_area"] for sample in batch]),
         "centroid_fg_mask": getattr(torch, "stack")([sample["centroid_fg_mask"] for sample in batch]),
         "centroid_label_hist": getattr(torch, "stack")([sample["centroid_label_hist"] for sample in batch]),
         "centroid_row_projection": getattr(torch, "stack")([sample["centroid_row_projection"] for sample in batch]),

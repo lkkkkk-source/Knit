@@ -7,7 +7,8 @@ from typing import cast
 
 from .dataset import build_dataloader, load_manifest
 from .models.foreground_planner import ForegroundCanonicalPlanner
-from .utils import IGNORE_INDEX, finish_progress, format_metric_line, load_config, print_progress
+from .compose_foreground import compose_foreground
+from .utils import IGNORE_INDEX, finish_progress, format_metric_line, foreground_area, label_diversity_on_fg, load_config, print_progress, require_foreground_cache_fields
 
 
 def _require_torch() -> tuple[object, object]:
@@ -52,6 +53,139 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _safe_entropy(counts: list[int]) -> float:
+    total = float(sum(counts))
+    if total <= 0.0:
+        return 0.0
+    import math
+
+    entropy = 0.0
+    for count in counts:
+        if count <= 0:
+            continue
+        prob = count / total
+        entropy -= prob * math.log(prob + 1e-12)
+    return entropy
+
+
+def _effective_modes(counts: list[int]) -> float:
+    total = float(sum(counts))
+    if total <= 0.0:
+        return 0.0
+    denom = sum((count / total) ** 2 for count in counts if count > 0)
+    return 1.0 / max(denom, 1e-12)
+
+
+def _compute_epoch_metrics(torch: object, outputs: dict[str, object], batch: dict[str, object], losses: dict[str, float]) -> dict[str, float]:
+    fg_mask_prob = getattr(torch, "sigmoid")(outputs["fg_mask_logits"].detach().squeeze(1))
+    fg_mask_pred = (fg_mask_prob >= 0.5).to(dtype=getattr(torch, "long"))
+    fg_mask_target = batch["fg_mask20"].detach().to(dtype=getattr(torch, "long"))
+    fg_target = batch["fg_y20"].detach()
+    fg_label_pred = outputs["fg_label_logits"].detach().argmax(dim=1) + 1
+    fg_mask_float = fg_mask_target.to(dtype=getattr(torch, "float32"))
+    inter = (fg_mask_pred * fg_mask_target).sum(dim=(1, 2)).to(dtype=getattr(torch, "float32"))
+    union = ((fg_mask_pred + fg_mask_target) > 0).sum(dim=(1, 2)).to(dtype=getattr(torch, "float32"))
+    fg_mask_iou = (inter / union.clamp_min(1.0)).mean().item()
+    fg_positions = fg_mask_target > 0
+    fg_correct = ((fg_label_pred == fg_target) & fg_positions).sum().item()
+    fg_total = fg_positions.sum().item()
+    label_acc = float(fg_correct) / float(max(1, fg_total))
+    batch_size = int(batch["category_ids"].shape[0])
+    composed_background = 0
+    composed_foreground = 0
+    label_div_sum = 0.0
+    area_valid = 0.0
+    areas: list[float] = []
+    local_counts: dict[int, int] = {}
+    for index in range(batch_size):
+        local_z = int(outputs["local_z"][index].item())
+        local_counts[local_z] = local_counts.get(local_z, 0) + 1
+        pred_mask = fg_mask_pred[index].cpu().tolist()
+        pred_label = fg_label_pred[index].cpu().tolist()
+        bbox_pred = [float(value) for value in outputs["bbox_pred"][index].detach().cpu().tolist()]
+        composed = compose_foreground(pred_mask, pred_label, bbox_pred)["composed_y20"]
+        area = foreground_area(pred_mask)
+        areas.append(area)
+        if area <= 0.0:
+            composed_background += 1
+        if area >= 0.99:
+            composed_foreground += 1
+        if 0.0 < area < 0.99:
+            area_valid += 1.0
+        label_div_sum += float(label_diversity_on_fg(pred_label, pred_mask))
+    mode_hist = [local_counts[key] for key in sorted(local_counts)]
+    return {
+        "fg_mask_iou": float(fg_mask_iou),
+        "fg_label_acc_on_fg": float(label_acc),
+        "foreground_label_ce": float(losses["fg_ce"]),
+        "empty_foreground_rate": float(composed_background) / float(max(1, batch_size)),
+        "full_foreground_rate": float(composed_foreground) / float(max(1, batch_size)),
+        "valid_foreground_rate": float(area_valid) / float(max(1, batch_size)),
+        "local_z_entropy": float(_safe_entropy(mode_hist)),
+        "effective_local_modes": float(_effective_modes(mode_hist)),
+        "sampled_unique_local_z_count": float(len(local_counts)),
+        "bbox_l1": float(losses["bbox"]),
+        "row_projection_l1": float(losses["row"]),
+        "col_projection_l1": float(losses["col"]),
+        "adjacency_l1": float(losses["adj"]),
+        "grammar_l1": float(losses["grammar"]),
+        "label_diversity_on_fg": float(label_div_sum) / float(max(1, batch_size)),
+        "mean_fg_area": float(sum(areas) / float(max(1, len(areas)))),
+    }
+
+
+def _merge_metric_sums(metric_sums: dict[str, float], metrics: dict[str, float]) -> None:
+    for key, value in metrics.items():
+        metric_sums[key] = metric_sums.get(key, 0.0) + float(value)
+
+
+def _finalize_metric_sums(metric_sums: dict[str, float], count: int) -> dict[str, float]:
+    return {key: value / float(max(1, count)) for key, value in metric_sums.items()}
+
+
+def _evaluate_loader(model: object, loader: object, device: object, torch: object, functional: object) -> dict[str, float]:
+    model.eval()
+    metric_sums: dict[str, float] = {}
+    batch_count = 0
+    with getattr(torch, "no_grad")():
+        for batch in loader:
+            local_z = batch["local_z"].to(device)
+            mode_mask = batch["mode_mask"].to(device)
+            if bool((local_z < 0).any().item()) or bool((local_z >= mode_mask.sum(dim=-1)).any().item()):
+                raise ValueError("Validation batch contains invalid local_z relative to mode_mask.")
+            outputs = model(
+                batch["category_ids"].to(device),
+                centroid_label_hist=batch["centroid_label_hist"].to(device),
+                centroid_row_projection=batch["centroid_row_projection"].to(device),
+                centroid_col_projection=batch["centroid_col_projection"].to(device),
+                centroid_adjacency=batch["centroid_adjacency"].to(device),
+                centroid_transition_stats=batch["centroid_transition_stats"].to(device),
+                centroid_bbox_stats=batch["centroid_bbox_stats"].to(device),
+                local_z=local_z,
+                mode_mask=mode_mask,
+            )
+            fg_target = batch["fg_y20"].to(device)
+            fg_label_target = getattr(torch, "where")(fg_target >= 1, fg_target - 1, fg_target)
+            losses = {
+                "fg_ce": float(functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=IGNORE_INDEX).item()),
+                "bbox": float(functional.l1_loss(outputs["bbox_pred"], batch["bbox_stats"].to(device)).item()),
+                "row": float(functional.l1_loss(outputs["row_projection_pred"], batch["row_projection"].to(device)).item()),
+                "col": float(functional.l1_loss(outputs["col_projection_pred"], batch["col_projection"].to(device)).item()),
+                "grammar": float(functional.l1_loss(outputs["grammar_signature_pred"], batch["grammar_signature"].to(device)).item()),
+                "adj": float(functional.l1_loss(outputs["adjacency_signature_pred"], batch["adjacency_signature"].to(device)).item()),
+            }
+            _merge_metric_sums(metric_sums, _compute_epoch_metrics(torch, outputs, batch, losses))
+            batch_count += 1
+    return _finalize_metric_sums(metric_sums, batch_count)
+
+
+def _require_cache_payload_fields(cache_payload: dict[str, object], *, context: str) -> None:
+    require_foreground_cache_fields(cache_payload, context=context)
+    for key in ["centroid_sketch_by_category", "category_to_num_modes", "descriptor_slices"]:
+        if key not in cache_payload:
+            raise ValueError(f"{context} is missing required field {key!r}.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -59,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     data_cf = config["data"]
     planner_cf = config["planner"]
     train_cf = config["train"]
+    loss_weights = cast(dict[str, float], train_cf.get("loss_weights", {}))
     train_manifest = Path(data_cf["train_manifest"])
     val_manifest = Path(data_cf["val_manifest"])
     train_cache = Path(data_cf["cache_dir"]) / "foreground_cache_train.pt"
@@ -69,7 +204,10 @@ def main(argv: list[str] | None = None) -> int:
     torch, optim = _require_torch()
     device = _resolve_device(torch, str(train_cf["device"]))
     train_loader, train_dataset = build_dataloader(train_manifest, train_cache, batch_size=int(train_cf["batch_size"]), shuffle=True, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]))
-    val_loader, _ = build_dataloader(val_manifest, val_cache, batch_size=int(train_cf["batch_size"]), shuffle=False, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]))
+    val_loader, val_dataset = build_dataloader(val_manifest, val_cache, batch_size=int(train_cf["batch_size"]), shuffle=False, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]))
+    _require_cache_payload_fields(train_dataset.cache_payload, context="Train foreground cache")
+    _require_cache_payload_fields(val_dataset.cache_payload, context="Val foreground cache")
+    print(format_metric_line("foreground-train-init:", [("train_cache_path", str(train_cache)), ("val_cache_path", str(val_cache)), ("train_items", len(train_dataset)), ("val_items", len(val_dataset)), ("categories", len(category_to_id)), ("category_to_num_modes", train_dataset.cache_payload["category_to_num_modes"])]))
     model = ForegroundCanonicalPlanner(
         num_categories=len(category_to_id),
         max_num_modes=int(planner_cf["num_modes_per_category"]),
@@ -86,15 +224,21 @@ def main(argv: list[str] | None = None) -> int:
     history: list[dict[str, object]] = []
     output_dir = Path(train_cf["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    best_metric_name = "val_valid_foreground_rate"
+    best_metric_value = float("-inf")
 
     for epoch in range(int(train_cf["epochs"])):
         print(f"\nepoch {epoch + 1}/{int(train_cf['epochs'])}")
         model.train()
         total_loss = 0.0
-        total_fg_mask = 0.0
-        total_fg_ce = 0.0
+        metric_sums: dict[str, float] = {}
         batch_count = 0
         for batch in train_loader:
+            local_z = batch["local_z"].to(device)
+            mode_mask = batch["mode_mask"].to(device)
+            valid_mode_counts = mode_mask.sum(dim=-1)
+            if bool((local_z < 0).any().item()) or bool((local_z >= valid_mode_counts).any().item()):
+                raise ValueError("Train batch contains invalid local_z relative to mode_mask.")
             outputs = model(
                 batch["category_ids"].to(device),
                 centroid_label_hist=batch["centroid_label_hist"].to(device),
@@ -103,8 +247,8 @@ def main(argv: list[str] | None = None) -> int:
                 centroid_adjacency=batch["centroid_adjacency"].to(device),
                 centroid_transition_stats=batch["centroid_transition_stats"].to(device),
                 centroid_bbox_stats=batch["centroid_bbox_stats"].to(device),
-                local_z=batch["local_z"].to(device),
-                mode_mask=batch["mode_mask"].to(device),
+                local_z=local_z,
+                mode_mask=mode_mask,
             )
             fg_mask_target = batch["fg_mask20"].to(device)
             fg_mask_loss = functional.binary_cross_entropy_with_logits(outputs["fg_mask_logits"].squeeze(1), fg_mask_target)
@@ -117,33 +261,77 @@ def main(argv: list[str] | None = None) -> int:
             col_loss = functional.l1_loss(outputs["col_projection_pred"], batch["col_projection"].to(device))
             grammar_loss = functional.l1_loss(outputs["grammar_signature_pred"], batch["grammar_signature"].to(device))
             adj_loss = functional.l1_loss(outputs["adjacency_signature_pred"], batch["adjacency_signature"].to(device))
-            z_loss = functional.cross_entropy(outputs["local_z_logits"].masked_fill(batch["mode_mask"].to(device).logical_not(), float("-inf")), batch["local_z"].to(device))
-            loss = z_loss + fg_mask_loss + fg_ce + bbox_loss + row_loss + col_loss + grammar_loss + adj_loss
+            z_loss = functional.cross_entropy(outputs["local_z_logits"].masked_fill(mode_mask.logical_not(), float("-inf")), local_z)
+            loss = (
+                float(loss_weights.get("local_z", 1.0)) * z_loss
+                + float(loss_weights.get("fg_mask", 1.0)) * fg_mask_loss
+                + float(loss_weights.get("fg_label", 1.0)) * fg_ce
+                + float(loss_weights.get("bbox", 1.0)) * bbox_loss
+                + float(loss_weights.get("row_projection", 1.0)) * row_loss
+                + float(loss_weights.get("col_projection", 1.0)) * col_loss
+                + float(loss_weights.get("grammar_signature", 1.0)) * grammar_loss
+                + float(loss_weights.get("adjacency", 1.0)) * adj_loss
+            )
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             total_loss += float(loss.item())
-            total_fg_mask += float(fg_mask_loss.item())
-            total_fg_ce += float(fg_ce.item())
+            losses = {
+                "fg_ce": float(fg_ce.item()),
+                "bbox": float(bbox_loss.item()),
+                "row": float(row_loss.item()),
+                "col": float(col_loss.item()),
+                "grammar": float(grammar_loss.item()),
+                "adj": float(adj_loss.item()),
+            }
+            _merge_metric_sums(metric_sums, _compute_epoch_metrics(torch, outputs, batch, losses))
             batch_count += 1
-            print_progress("fg-train", batch_count, len(train_loader), f"loss={total_loss / batch_count:.4f} fg_mask={total_fg_mask / batch_count:.4f} fg_ce={total_fg_ce / batch_count:.4f}")
+            print_progress("fg-train", batch_count, len(train_loader), f"loss={total_loss / batch_count:.4f} fg_ce={losses['fg_ce']:.4f}")
         finish_progress()
+        train_summary = _finalize_metric_sums(metric_sums, batch_count)
+        val_summary = _evaluate_loader(model, val_loader, device, torch, functional)
         summary = {
             "epoch": epoch + 1,
             "train_loss": total_loss / max(1, batch_count),
-            "fg_mask_iou": 0.0,
-            "fg_label_acc_on_fg": 0.0,
-            "foreground_label_ce": total_fg_ce / max(1, batch_count),
-            "empty_foreground_rate": 0.0,
-            "full_foreground_rate": 0.0,
-            "local_z_entropy": 0.0,
-            "effective_local_modes": 0.0,
-            "bbox_l1": 0.0,
-            "adjacency_l1": 0.0,
-            "grammar_l1": 0.0,
+            **{f"train_{key}": value for key, value in train_summary.items()},
+            **{f"val_{key}": value for key, value in val_summary.items()},
         }
         history.append(summary)
-        print(format_metric_line("summary foreground:", [("train_loss", cast(float, summary["train_loss"])), ("fg_ce", cast(float, summary["foreground_label_ce"]))]))
+        print(format_metric_line("summary foreground:", [("train_loss", cast(float, summary["train_loss"])), ("train_fg_iou", cast(float, summary["train_fg_mask_iou"])), ("val_valid_fg", cast(float, summary["val_valid_foreground_rate"]))]))
+
+        checkpoint_payload = {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "epoch": epoch + 1,
+            "config": config,
+            "metrics": summary,
+            "category_to_id": category_to_id,
+            "id_to_category": mapping["id_to_category"],
+            "category_to_num_modes": train_dataset.cache_payload["category_to_num_modes"],
+            "descriptor_slices": train_dataset.cache_payload["descriptor_slices"],
+            "descriptor_global_mean": train_dataset.cache_payload["descriptor_global_mean"],
+            "descriptor_global_std": train_dataset.cache_payload["descriptor_global_std"],
+            "category_foreground_area_stats": train_dataset.cache_payload["category_foreground_area_stats"],
+            "train_cache_path": str(train_cache),
+            "best_metric_name": best_metric_name,
+            "best_metric_value": best_metric_value,
+            "history": history,
+            "grammar_signature_dim": len(train_dataset[0]["grammar_signature"]),
+            "adjacency_signature_dim": len(train_dataset[0]["adjacency_signature"]),
+            "bbox_dim": len(train_dataset[0]["bbox_stats"]),
+            "max_num_modes": int(planner_cf["num_modes_per_category"]),
+        }
+        checkpoint_last_path = output_dir / "checkpoint_last.pt"
+        getattr(torch, "save")(checkpoint_payload, checkpoint_last_path)
+        print(f"saved checkpoint_last: {checkpoint_last_path}")
+        current_metric = float(summary["val_valid_foreground_rate"])
+        if current_metric >= best_metric_value:
+            best_metric_value = current_metric
+            checkpoint_payload["best_metric_value"] = best_metric_value
+            checkpoint_payload["best_metric_name"] = best_metric_name
+            best_path = output_dir / "checkpoint.pt"
+            getattr(torch, "save")(checkpoint_payload, best_path)
+            print(f"saved best checkpoint: {best_path}")
 
     metrics = {
         "history": history,
@@ -151,15 +339,19 @@ def main(argv: list[str] | None = None) -> int:
         "id_to_category": mapping["id_to_category"],
         "category_to_num_modes": train_dataset.cache_payload["category_to_num_modes"],
         "descriptor_slices": train_dataset.cache_payload["descriptor_slices"],
+        "descriptor_global_mean": train_dataset.cache_payload["descriptor_global_mean"],
+        "descriptor_global_std": train_dataset.cache_payload["descriptor_global_std"],
+        "category_foreground_area_stats": train_dataset.cache_payload["category_foreground_area_stats"],
+        "train_cache_path": str(train_cache),
         "grammar_signature_dim": len(train_dataset[0]["grammar_signature"]),
         "adjacency_signature_dim": len(train_dataset[0]["adjacency_signature"]),
         "bbox_dim": len(train_dataset[0]["bbox_stats"]),
         "max_num_modes": int(planner_cf["num_modes_per_category"]),
+        "best_metric_name": best_metric_name,
+        "best_metric_value": best_metric_value,
         "config": config,
     }
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
-    getattr(torch, "save")({"model_state_dict": model.state_dict(), "metrics": metrics}, output_dir / "checkpoint.pt")
-    print(f"saved checkpoint: {output_dir / 'checkpoint.pt'}")
     return 0
 
 

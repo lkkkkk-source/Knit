@@ -26,3 +26,11 @@ python -m knit_decode.struct_foreground_v1.inspect_foreground_planner --config k
 python -m knit_decode.struct_foreground_v1.sample_foreground_candidates --config knit_decode/struct_foreground_v1/configs/foreground_v1.yaml --checkpoint knit_decode/struct_foreground_v1/runs/foreground_planner_v1/checkpoint.pt --category Cable1 --num-candidates 32
 python -m knit_decode.struct_foreground_v1.eval_foreground_structure --config knit_decode/struct_foreground_v1/configs/foreground_v1.yaml --samples-dir knit_decode/struct_foreground_v1/runs/foreground_planner_v1/samples/Cable1
 ```
+
+Notes:
+
+- train cache is saved as `foreground_cache_train.pt`
+- val cache is saved as `foreground_cache_val.pt`
+- val/test cache assignment must use `--kmeans-source-cache` from train cache and never refit KMeans
+- `checkpoint_last.pt` is saved every epoch; best `val_valid_foreground_rate` is saved as `checkpoint.pt`
+- `eval_foreground_structure.py` no longer emits placeholder metrics; it now fails fast until paired supervised references are wired in explicitly
