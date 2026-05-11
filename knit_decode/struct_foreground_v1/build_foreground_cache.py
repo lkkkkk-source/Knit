@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, finish_progress, foreground_descriptor, format_metric_line, load_config, print_progress
+from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_stats_by_category, finish_progress, foreground_descriptor, format_metric_line, load_config, print_progress
 
 
 def _require_sklearn() -> object:
@@ -70,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         y20 = load_label_grid(target_path)
         canonical = canonicalize_foreground(y20, background_class_id=int(data_cf["background_class_id"]), canonical_size=int(data_cf["canonical_size"]))
         descriptor = foreground_descriptor(canonical["fg_y20"], canonical["fg_mask20"], canonical["bbox"])
+        fg_area = sum(int(value) for row_fg in canonical["fg_mask20"] for value in row_fg) / float(max(1, int(data_cf["canonical_size"]) * int(data_cf["canonical_size"])))
         item = {
             "sample_id": row["sample_id"],
             "category": row["category"],
@@ -81,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             "fg_y20": canonical["fg_y20"],
             "fg_mask20": canonical["fg_mask20"],
             "is_empty_foreground": bool(canonical["is_empty_foreground"]),
+            "fg_area": fg_area,
             "bbox_stats": bbox_vector(canonical["bbox"], canonical_size=int(data_cf["canonical_size"])),
             **descriptor,
         }
@@ -103,10 +105,15 @@ def main(argv: list[str] | None = None) -> int:
     min_samples_per_mode = int(planner_cf["min_samples_per_mode"])
     category_kmeans_centers: dict[str, list[list[float]]] = {}
     category_to_num_modes: dict[str, int] = {}
+    descriptors_by_category_stats: dict[str, list[list[float]]] = {}
+    descriptor_mean_by_category: dict[str, list[float]] = {}
+    descriptor_std_by_category: dict[str, list[float]] = {}
+    category_foreground_area_stats: dict[str, dict[str, float]] = {}
 
     if args.fit_kmeans:
         sklearn_cluster = _require_sklearn()
         cluster_cls = getattr(sklearn_cluster, "MiniBatchKMeans")
+        descriptors_by_category_stats, descriptor_mean_by_category, descriptor_std_by_category, category_foreground_area_stats = descriptor_stats_by_category(items, sorted({item["category"] for item in items}))
         for category, descs in descriptors_by_category.items():
             samples_c = nondegenerate_by_category[category]
             k_c = min(num_modes_per_category, max(2, math.floor(len(samples_c) / max(1, min_samples_per_mode))))
@@ -127,6 +134,10 @@ def main(argv: list[str] | None = None) -> int:
         source_payload = torch.load(Path(args.kmeans_source_cache), map_location="cpu")
         category_kmeans_centers = source_payload["category_kmeans_centers"]
         category_to_num_modes = source_payload["category_to_num_modes"]
+        descriptors_by_category_stats = source_payload["descriptors_by_category"]
+        descriptor_mean_by_category = source_payload["descriptor_mean_by_category"]
+        descriptor_std_by_category = source_payload["descriptor_std_by_category"]
+        category_foreground_area_stats = source_payload["category_foreground_area_stats"]
         global_centers = []
         for centers in category_kmeans_centers.values():
             global_centers.extend(centers)
@@ -187,6 +198,10 @@ def main(argv: list[str] | None = None) -> int:
         "items": items,
         "category_kmeans_centers": category_kmeans_centers,
         "category_to_num_modes": category_to_num_modes,
+        "descriptors_by_category": descriptors_by_category_stats,
+        "descriptor_mean_by_category": descriptor_mean_by_category,
+        "descriptor_std_by_category": descriptor_std_by_category,
+        "category_foreground_area_stats": category_foreground_area_stats,
         "centroid_sketch_by_category": centroid_sketch_by_category,
         "descriptor_slices": descriptor_slices or {},
         "config": config,
