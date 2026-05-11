@@ -28,6 +28,38 @@ python -m knit_decode.struct_foreground_v1.sample_foreground_candidates --config
 python -m knit_decode.struct_foreground_v1.eval_foreground_structure --config knit_decode/struct_foreground_v1/configs/foreground_v1.yaml --samples-dir knit_decode/struct_foreground_v1/runs/foreground_planner_v1/samples/Cable1
 ```
 
+Front-only manifest filtering
+
+- Some back-side instruction images contain `back` in the filename, for example `dataset2/instruction/Tuck_042_0_6_back.png`.
+- These samples may also use non-standard border/background colors such as green, which are not suitable for the current front-only foreground prior.
+- If kept in training, they can pollute `fg_mask`, descriptor statistics, KMeans, centroids, and foreground CE.
+- This stage does not attempt front/back joint modeling; it only builds a reproducible front-only manifest.
+- Original data files and original manifests are preserved. The filter only creates new `*_frontonly.jsonl` manifests.
+
+```bash
+python -m knit_decode.struct_foreground_v1.filter_front_manifest \
+  --manifest outputs/manifests/inverse_rendering_train.jsonl \
+  --output outputs/manifests/inverse_rendering_train_frontonly.jsonl
+
+python -m knit_decode.struct_foreground_v1.filter_front_manifest \
+  --manifest outputs/manifests/inverse_rendering_val.jsonl \
+  --output outputs/manifests/inverse_rendering_val_frontonly.jsonl
+```
+
+Then rebuild cache from the filtered manifests:
+
+```bash
+python -m knit_decode.struct_foreground_v1.build_foreground_cache \
+  --config knit_decode/struct_foreground_v1/configs/foreground_v1.yaml \
+  --manifest outputs/manifests/inverse_rendering_train_frontonly.jsonl \
+  --fit-kmeans
+
+python -m knit_decode.struct_foreground_v1.build_foreground_cache \
+  --config knit_decode/struct_foreground_v1/configs/foreground_v1.yaml \
+  --manifest outputs/manifests/inverse_rendering_val_frontonly.jsonl \
+  --kmeans-source-cache knit_decode/struct_foreground_v1/cache/foreground_v1/foreground_cache_train.pt
+```
+
 Inspect foreground cache
 
 ```bash
