@@ -23,3 +23,4 @@ __pycache__/
 # Model checkpoints / generated cache
 *.pt
 knit_decode/struct_latentplan_v1/cache/
+knit_decode/struct_foreground_v1/runs/
