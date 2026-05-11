@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import TypedDict, cast
+
+from .utils import IGNORE_INDEX
+
+
+class ForegroundSample(TypedDict):
+    sample_id: str
+    category: str
+    input_path: str
+    target_path: str
+    index_path: str
+
+
+def _require_torch() -> tuple[object, object]:
+    import importlib
+
+    try:
+        torch = importlib.import_module("torch")
+        data = importlib.import_module("torch.utils.data")
+    except ImportError as error:
+        raise ImportError("PyTorch is required for struct_foreground_v1 dataset.") from error
+    return torch, data
+
+
+def load_manifest(path: str | Path) -> list[ForegroundSample]:
+    rows: list[ForegroundSample] = []
+    path = Path(path)
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        row = {}
+        for key in ["sample_id", "category", "input_path", "target_path", "index_path"]:
+            value = payload.get(key)
+            if not isinstance(value, str):
+                raise ValueError(f"Missing {key!r} in manifest row: {payload!r}")
+            row[key] = value
+        rows.append(cast(ForegroundSample, row))
+    return rows
+
+
+class ForegroundDataset:
+    def __init__(self, manifest_path: str | Path, cache_path: str | Path, category_to_id: dict[str, int] | None = None) -> None:
+        torch, _ = _require_torch()
+        self.manifest_path = Path(manifest_path)
+        self.samples = load_manifest(self.manifest_path)
+        self.cache_payload = getattr(torch, "load")(Path(cache_path), map_location="cpu")
+        self.cache_by_id = {entry["sample_id"]: entry for entry in self.cache_payload["items"]}
+        categories = sorted({sample["category"] for sample in self.samples})
+        self.category_to_id = category_to_id or {category: index for index, category in enumerate(categories)}
+        planner_cf = self.cache_payload.get("config", {}).get("planner", {})
+        self.max_num_modes_per_category = int(planner_cf.get("max_num_modes_per_category", planner_cf.get("num_modes_per_category", 16)))
+        self._validate_alignment()
+
+    def _validate_alignment(self) -> None:
+        manifest_ids = {sample["sample_id"] for sample in self.samples}
+        cache_ids = set(self.cache_by_id)
+        if manifest_ids != cache_ids:
+            raise ValueError("Manifest/cache sample_id mismatch in foreground dataset")
+        for sample in self.samples:
+            cached = self.cache_by_id[sample["sample_id"]]
+            if cached["category"] != sample["category"]:
+                raise ValueError(f"Category mismatch for sample_id={sample['sample_id']}")
+            for key in ("input_path", "target_path", "index_path"):
+                if str(cached.get(key)) != str(sample[key]):
+                    raise ValueError(f"Path mismatch for sample_id={sample['sample_id']} field={key}")
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> dict[str, object]:
+        torch, _ = _require_torch()
+        sample = self.samples[index]
+        cached = self.cache_by_id[sample["sample_id"]]
+        category = sample["category"]
+        if category not in self.category_to_id:
+            raise KeyError(f"Category {category!r} missing from category_to_id.")
+        local_z = int(cached["local_z"])
+        num_modes = int(cached["num_modes_for_category"])
+        mode_mask = [1 if mode_index < num_modes else 0 for mode_index in range(self.max_num_modes_per_category)]
+        centroid = self.cache_payload["centroid_sketch_by_category"].get(category, {}).get(local_z, {})
+        return {
+            "sample_id": str(sample["sample_id"]),
+            "category": str(category),
+            "category_id": int(self.category_to_id[category]),
+            "local_z": getattr(torch, "tensor")(local_z, dtype=getattr(torch, "long")),
+            "mode_mask": getattr(torch, "tensor")(mode_mask, dtype=getattr(torch, "bool")),
+            "fg_y20": getattr(torch, "tensor")(cached["fg_y20"], dtype=getattr(torch, "long")),
+            "fg_mask20": getattr(torch, "tensor")(cached["fg_mask20"], dtype=getattr(torch, "float32")),
+            "bbox_stats": getattr(torch, "tensor")(cached["bbox_stats"], dtype=getattr(torch, "float32")),
+            "label_hist_16": getattr(torch, "tensor")(cached["label_hist_16"], dtype=getattr(torch, "float32")),
+            "row_projection": getattr(torch, "tensor")(cached["row_projection"], dtype=getattr(torch, "float32")),
+            "col_projection": getattr(torch, "tensor")(cached["col_projection"], dtype=getattr(torch, "float32")),
+            "grammar_signature": getattr(torch, "tensor")(cached["grammar_signature"], dtype=getattr(torch, "float32")),
+            "adjacency_signature": getattr(torch, "tensor")(cached["adjacency_signature"], dtype=getattr(torch, "float32")),
+            "centroid_fg_mask": getattr(torch, "tensor")(centroid.get("centroid_fg_mask", [[0.0] * 20 for _ in range(20)]), dtype=getattr(torch, "float32")),
+            "centroid_label_hist": getattr(torch, "tensor")(centroid.get("centroid_label_hist", [0.0] * 16), dtype=getattr(torch, "float32")),
+            "centroid_row_projection": getattr(torch, "tensor")(centroid.get("centroid_row_projection", [0.0] * 20), dtype=getattr(torch, "float32")),
+            "centroid_col_projection": getattr(torch, "tensor")(centroid.get("centroid_col_projection", [0.0] * 20), dtype=getattr(torch, "float32")),
+            "centroid_adjacency": getattr(torch, "tensor")(centroid.get("centroid_adjacency", [0.0] * 256), dtype=getattr(torch, "float32")),
+            "centroid_transition_stats": getattr(torch, "tensor")(centroid.get("centroid_transition_stats", [0.0] * 6), dtype=getattr(torch, "float32")),
+            "centroid_bbox_stats": getattr(torch, "tensor")(centroid.get("centroid_bbox_stats", [0.0] * 10), dtype=getattr(torch, "float32")),
+            "original_y20": getattr(torch, "tensor")(cached["original_y20"], dtype=getattr(torch, "long")),
+            "metadata": cached,
+        }
+
+
+def collate_batch(batch: list[dict[str, object]]) -> dict[str, object]:
+    torch, _ = _require_torch()
+    return {
+        "sample_ids": [sample["sample_id"] for sample in batch],
+        "categories": [sample["category"] for sample in batch],
+        "category_ids": getattr(torch, "tensor")([int(sample["category_id"]) for sample in batch], dtype=getattr(torch, "long")),
+        "local_z": getattr(torch, "stack")([sample["local_z"] for sample in batch]),
+        "mode_mask": getattr(torch, "stack")([sample["mode_mask"] for sample in batch]),
+        "fg_y20": getattr(torch, "stack")([sample["fg_y20"] for sample in batch]),
+        "fg_mask20": getattr(torch, "stack")([sample["fg_mask20"] for sample in batch]),
+        "bbox_stats": getattr(torch, "stack")([sample["bbox_stats"] for sample in batch]),
+        "label_hist_16": getattr(torch, "stack")([sample["label_hist_16"] for sample in batch]),
+        "row_projection": getattr(torch, "stack")([sample["row_projection"] for sample in batch]),
+        "col_projection": getattr(torch, "stack")([sample["col_projection"] for sample in batch]),
+        "grammar_signature": getattr(torch, "stack")([sample["grammar_signature"] for sample in batch]),
+        "adjacency_signature": getattr(torch, "stack")([sample["adjacency_signature"] for sample in batch]),
+        "centroid_fg_mask": getattr(torch, "stack")([sample["centroid_fg_mask"] for sample in batch]),
+        "centroid_label_hist": getattr(torch, "stack")([sample["centroid_label_hist"] for sample in batch]),
+        "centroid_row_projection": getattr(torch, "stack")([sample["centroid_row_projection"] for sample in batch]),
+        "centroid_col_projection": getattr(torch, "stack")([sample["centroid_col_projection"] for sample in batch]),
+        "centroid_adjacency": getattr(torch, "stack")([sample["centroid_adjacency"] for sample in batch]),
+        "centroid_transition_stats": getattr(torch, "stack")([sample["centroid_transition_stats"] for sample in batch]),
+        "centroid_bbox_stats": getattr(torch, "stack")([sample["centroid_bbox_stats"] for sample in batch]),
+        "original_y20": getattr(torch, "stack")([sample["original_y20"] for sample in batch]),
+        "metadata": [sample["metadata"] for sample in batch],
+    }
+
+
+def build_dataloader(
+    manifest_path: str | Path,
+    cache_path: str | Path,
+    batch_size: int,
+    shuffle: bool,
+    category_to_id: dict[str, int] | None = None,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    persistent_workers: bool = False,
+) -> tuple[object, ForegroundDataset]:
+    _, data = _require_torch()
+    dataset = ForegroundDataset(manifest_path, cache_path=cache_path, category_to_id=category_to_id)
+    loader = getattr(data, "DataLoader")(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=collate_batch,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(persistent_workers if num_workers > 0 else False),
+    )
+    return loader, dataset
