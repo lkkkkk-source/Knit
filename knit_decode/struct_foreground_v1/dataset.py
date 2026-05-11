@@ -44,17 +44,39 @@ def load_manifest(path: str | Path) -> list[ForegroundSample]:
 
 
 class ForegroundDataset:
-    def __init__(self, manifest_path: str | Path, cache_path: str | Path, category_to_id: dict[str, int] | None = None) -> None:
+    def __init__(
+        self,
+        manifest_path: str | Path,
+        cache_path: str | Path,
+        category_to_id: dict[str, int] | None = None,
+        *,
+        exclude_unseen_categories: bool = False,
+    ) -> None:
         torch, _ = _require_torch()
         self.manifest_path = Path(manifest_path)
         self.samples = load_manifest(self.manifest_path)
         self.cache_payload = getattr(torch, "load")(Path(cache_path), map_location="cpu")
         self.cache_by_id = {entry["sample_id"]: entry for entry in self.cache_payload["items"]}
+        self.exclude_unseen_categories = bool(exclude_unseen_categories)
+        self.skipped_unseen_count = 0
+        self.skipped_unseen_categories: list[str] = []
         categories = sorted({sample["category"] for sample in self.samples})
         self.category_to_id = category_to_id or {category: index for index, category in enumerate(categories)}
         planner_cf = self.cache_payload.get("config", {}).get("planner", {})
         self.max_num_modes_per_category = int(planner_cf.get("max_num_modes_per_category", planner_cf.get("num_modes_per_category", 16)))
         self._validate_alignment()
+        if self.exclude_unseen_categories:
+            filtered = []
+            skipped_categories = set()
+            for sample in self.samples:
+                cached = self.cache_by_id[sample["sample_id"]]
+                if bool(cached.get("is_unseen_category", False)):
+                    self.skipped_unseen_count += 1
+                    skipped_categories.add(str(sample["category"]))
+                    continue
+                filtered.append(sample)
+            self.samples = filtered
+            self.skipped_unseen_categories = sorted(skipped_categories)
 
     def _validate_alignment(self) -> None:
         manifest_ids = {sample["sample_id"] for sample in self.samples}
@@ -90,6 +112,10 @@ class ForegroundDataset:
         category = sample["category"]
         if category not in self.category_to_id:
             raise KeyError(f"Category {category!r} missing from category_to_id.")
+        if bool(cached.get("is_unseen_category", False)):
+            raise ValueError(
+                f"Unseen category sample cannot provide centroid sketch: category={category}, sample_id={sample['sample_id']}"
+            )
         local_z = int(cached["local_z"])
         num_modes = int(cached["num_modes_for_category"])
         if num_modes <= 0 or num_modes > self.max_num_modes_per_category:
@@ -169,9 +195,15 @@ def build_dataloader(
     num_workers: int = 0,
     pin_memory: bool = False,
     persistent_workers: bool = False,
+    exclude_unseen_categories: bool = False,
 ) -> tuple[object, ForegroundDataset]:
     _, data = _require_torch()
-    dataset = ForegroundDataset(manifest_path, cache_path=cache_path, category_to_id=category_to_id)
+    dataset = ForegroundDataset(
+        manifest_path,
+        cache_path=cache_path,
+        category_to_id=category_to_id,
+        exclude_unseen_categories=exclude_unseen_categories,
+    )
     loader = getattr(data, "DataLoader")(
         dataset,
         batch_size=batch_size,

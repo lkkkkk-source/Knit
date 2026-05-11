@@ -186,6 +186,10 @@ def _require_cache_payload_fields(cache_payload: dict[str, object], *, context: 
             raise ValueError(f"{context} is missing required field {key!r}.")
 
 
+def _warn(message: str) -> None:
+    print(f"warning: {message}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -203,11 +207,30 @@ def main(argv: list[str] | None = None) -> int:
 
     torch, optim = _require_torch()
     device = _resolve_device(torch, str(train_cf["device"]))
-    train_loader, train_dataset = build_dataloader(train_manifest, train_cache, batch_size=int(train_cf["batch_size"]), shuffle=True, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]))
-    val_loader, val_dataset = build_dataloader(val_manifest, val_cache, batch_size=int(train_cf["batch_size"]), shuffle=False, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]))
+    train_loader, train_dataset = build_dataloader(train_manifest, train_cache, batch_size=int(train_cf["batch_size"]), shuffle=True, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]), exclude_unseen_categories=False)
+    val_loader, val_dataset = build_dataloader(val_manifest, val_cache, batch_size=int(train_cf["batch_size"]), shuffle=False, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]), exclude_unseen_categories=True)
     _require_cache_payload_fields(train_dataset.cache_payload, context="Train foreground cache")
     _require_cache_payload_fields(val_dataset.cache_payload, context="Val foreground cache")
-    print(format_metric_line("foreground-train-init:", [("train_cache_path", str(train_cache)), ("val_cache_path", str(val_cache)), ("train_items", len(train_dataset)), ("val_items", len(val_dataset)), ("categories", len(category_to_id)), ("category_to_num_modes", train_dataset.cache_payload["category_to_num_modes"])]))
+    unseen_val_categories = list(val_dataset.skipped_unseen_categories)
+    val_total_items = len(load_manifest(val_manifest))
+    print(
+        format_metric_line(
+            "foreground-train-init:",
+            [
+                ("train_cache_path", str(train_cache)),
+                ("val_cache_path", str(val_cache)),
+                ("train_items", len(train_dataset)),
+                ("val_items_total", val_total_items),
+                ("val_seen_items", len(val_dataset)),
+                ("val_skipped_unseen", val_dataset.skipped_unseen_count),
+                ("categories", len(category_to_id)),
+                ("unseen_val_categories", unseen_val_categories),
+                ("category_to_num_modes", train_dataset.cache_payload["category_to_num_modes"]),
+            ],
+        )
+    )
+    if len(val_dataset) == 0:
+        _warn("validation seen split has 0 items after excluding unseen categories; best metric will fallback to train_valid_foreground_rate")
     model = ForegroundCanonicalPlanner(
         num_categories=len(category_to_id),
         max_num_modes=int(planner_cf["num_modes_per_category"]),
@@ -289,15 +312,26 @@ def main(argv: list[str] | None = None) -> int:
             print_progress("fg-train", batch_count, len(train_loader), f"loss={total_loss / batch_count:.4f} fg_ce={losses['fg_ce']:.4f}")
         finish_progress()
         train_summary = _finalize_metric_sums(metric_sums, batch_count)
-        val_summary = _evaluate_loader(model, val_loader, device, torch, functional)
+        if len(val_dataset) > 0:
+            val_summary = _evaluate_loader(model, val_loader, device, torch, functional)
+        else:
+            val_summary = {}
         summary = {
             "epoch": epoch + 1,
             "train_loss": total_loss / max(1, batch_count),
             **{f"train_{key}": value for key, value in train_summary.items()},
             **{f"val_{key}": value for key, value in val_summary.items()},
+            "val_seen_count": len(val_dataset),
+            "val_unseen_skipped_count": val_dataset.skipped_unseen_count,
+            "unseen_val_categories": unseen_val_categories,
         }
         history.append(summary)
-        print(format_metric_line("summary foreground:", [("train_loss", cast(float, summary["train_loss"])), ("train_fg_iou", cast(float, summary["train_fg_mask_iou"])), ("val_valid_fg", cast(float, summary["val_valid_foreground_rate"]))]))
+        metric_items = [("train_loss", cast(float, summary["train_loss"])), ("train_fg_iou", cast(float, summary["train_fg_mask_iou"]))]
+        if "val_valid_foreground_rate" in summary:
+            metric_items.append(("val_valid_fg", cast(float, summary["val_valid_foreground_rate"])))
+        else:
+            metric_items.append(("val_valid_fg", "n/a"))
+        print(format_metric_line("summary foreground:", metric_items))
 
         checkpoint_payload = {
             "model_state_dict": model.state_dict(),
@@ -308,6 +342,10 @@ def main(argv: list[str] | None = None) -> int:
             "category_to_id": category_to_id,
             "id_to_category": mapping["id_to_category"],
             "category_to_num_modes": train_dataset.cache_payload["category_to_num_modes"],
+            "train_categories": mapping["train_categories"],
+            "val_categories": mapping["val_categories"],
+            "unseen_val_categories": unseen_val_categories,
+            "val_unseen_skipped_count": val_dataset.skipped_unseen_count,
             "descriptor_slices": train_dataset.cache_payload["descriptor_slices"],
             "descriptor_global_mean": train_dataset.cache_payload["descriptor_global_mean"],
             "descriptor_global_std": train_dataset.cache_payload["descriptor_global_std"],
@@ -324,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_last_path = output_dir / "checkpoint_last.pt"
         getattr(torch, "save")(checkpoint_payload, checkpoint_last_path)
         print(f"saved checkpoint_last: {checkpoint_last_path}")
-        current_metric = float(summary["val_valid_foreground_rate"])
+        current_metric = float(summary.get("val_valid_foreground_rate", summary["train_valid_foreground_rate"]))
         if current_metric >= best_metric_value:
             best_metric_value = current_metric
             checkpoint_payload["best_metric_value"] = best_metric_value
@@ -338,6 +376,10 @@ def main(argv: list[str] | None = None) -> int:
         "category_to_id": category_to_id,
         "id_to_category": mapping["id_to_category"],
         "category_to_num_modes": train_dataset.cache_payload["category_to_num_modes"],
+        "train_categories": mapping["train_categories"],
+        "val_categories": mapping["val_categories"],
+        "unseen_val_categories": unseen_val_categories,
+        "val_unseen_skipped_count": val_dataset.skipped_unseen_count,
         "descriptor_slices": train_dataset.cache_payload["descriptor_slices"],
         "descriptor_global_mean": train_dataset.cache_payload["descriptor_global_mean"],
         "descriptor_global_std": train_dataset.cache_payload["descriptor_global_std"],

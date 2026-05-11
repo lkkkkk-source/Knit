@@ -45,6 +45,12 @@ def main(argv: list[str] | None = None) -> int:
     payload = _require_torch().load(args.checkpoint, map_location="cpu")
     metrics = payload.get("metrics", {})
     category_to_id = checkpoint_get(payload, "category_to_id")
+    train_categories = list(checkpoint_get(payload, "train_categories"))
+    if args.category not in train_categories:
+        raise ValueError(
+            f"category not available in trained foreground prior: {args.category}\n"
+            f"available categories: {sorted(train_categories)}"
+        )
     if args.category not in category_to_id:
         raise KeyError(f"Unknown category {args.category!r}. Available categories: {sorted(category_to_id)}")
     output_dir = Path(args.output_dir or (args.checkpoint.parent / "samples" / args.category))
@@ -60,7 +66,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(f"Foreground train cache is missing category_foreground_area_stats for category {args.category!r}.")
     category_to_num_modes = checkpoint_get(payload, "category_to_num_modes")
     if args.category not in category_to_num_modes:
-        raise ValueError(f"Checkpoint is missing category_to_num_modes entry for {args.category!r}.")
+        raise ValueError(
+            f"category not available in trained foreground prior: {args.category}\n"
+            f"available categories: {sorted(train_categories)}"
+        )
     grammar_dim = int(metrics.get("grammar_signature_dim", 17))
     adjacency_dim = int(metrics.get("adjacency_signature_dim", 256))
     bbox_dim = int(metrics.get("bbox_dim", 10))

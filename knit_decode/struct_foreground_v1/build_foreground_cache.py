@@ -152,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             if item["is_empty_foreground"]:
                 item["local_z"] = 0
                 item["num_modes_for_category"] = max(1, category_to_num_modes.get(item["category"], 1))
+                item["is_unseen_category"] = False
     else:
         torch = __import__("torch")
         source_payload = torch.load(Path(args.kmeans_source_cache), map_location="cpu")
@@ -173,9 +174,14 @@ def main(argv: list[str] | None = None) -> int:
             category = item["category"]
             descriptor = item["descriptor"]
             if item["is_empty_foreground"]:
-                item["local_z"] = 0
-                item["num_modes_for_category"] = max(1, category_to_num_modes.get(category, 1))
-                item["is_unseen_category"] = category not in category_kmeans_centers
+                if category in category_kmeans_centers:
+                    item["local_z"] = 0
+                    item["num_modes_for_category"] = max(1, category_to_num_modes.get(category, 1))
+                    item["is_unseen_category"] = False
+                else:
+                    item["local_z"] = -1
+                    item["num_modes_for_category"] = 0
+                    item["is_unseen_category"] = True
                 continue
             if category in category_kmeans_centers:
                 centers_tensor = torch.tensor(category_kmeans_centers[category], dtype=torch.float32)
@@ -186,13 +192,8 @@ def main(argv: list[str] | None = None) -> int:
                 item["is_unseen_category"] = False
             else:
                 item["is_unseen_category"] = True
-                if global_tensor is not None:
-                    desc_tensor = torch.tensor(descriptor, dtype=torch.float32)
-                    dist = ((desc_tensor.unsqueeze(0) - global_tensor) ** 2).sum(dim=-1)
-                    item["local_z"] = int(dist.argmin().item())
-                else:
-                    item["local_z"] = 0
-                item["num_modes_for_category"] = num_modes_per_category
+                item["local_z"] = -1
+                item["num_modes_for_category"] = 0
 
     if args.fit_kmeans:
         for category, samples in nondegenerate_by_category.items():
