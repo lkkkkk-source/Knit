@@ -7,6 +7,7 @@ from pathlib import Path
 
 IGNORE_INDEX = -100
 EXPECTED_DESCRIPTOR_DIM = 329
+VALID_CANONICAL_MODES = ("full_masked", "bbox_crop")
 REQUIRED_FOREGROUND_CACHE_KEYS = (
     "descriptors_by_category",
     "descriptor_mean_by_category",
@@ -46,6 +47,29 @@ def format_metric_line(prefix: str, items: list[tuple[str, object]]) -> str:
         else:
             parts.append(f"{key}={value}")
     return " ".join(parts)
+
+
+def resolve_canonical_mode(data_cf: dict[str, object]) -> str:
+    if "canonical_mode" not in data_cf:
+        raise ValueError("Config data.canonical_mode is required.")
+    canonical_mode = str(data_cf["canonical_mode"])
+    if canonical_mode not in VALID_CANONICAL_MODES:
+        raise ValueError(
+            f"Unsupported canonical_mode={canonical_mode!r}. "
+            f"Expected one of {list(VALID_CANONICAL_MODES)}."
+        )
+    return canonical_mode
+
+
+def require_ignore_index(data_cf: dict[str, object]) -> int:
+    if "ignore_index" not in data_cf:
+        raise ValueError("Config data.ignore_index is required.")
+    ignore_index = int(data_cf["ignore_index"])
+    if ignore_index != IGNORE_INDEX:
+        raise ValueError(
+            f"Config data.ignore_index must be {IGNORE_INDEX}, got {ignore_index}."
+        )
+    return ignore_index
 
 
 def checkpoint_get(payload: dict[str, object], key: str, *, required: bool = True) -> object:
@@ -288,13 +312,63 @@ def bbox_from_mask(mask: list[list[bool]]) -> dict[str, float]:
     }
 
 
-def canonicalize_foreground(grid20: list[list[int]], background_class_id: int, canonical_size: int = 20) -> dict[str, object]:
+def canonicalize_foreground(
+    grid20: list[list[int]],
+    background_class_id: int,
+    canonical_size: int = 20,
+    *,
+    canonical_mode: str = "full_masked",
+    ignore_index: int = IGNORE_INDEX,
+) -> dict[str, object]:
+    if canonical_mode not in VALID_CANONICAL_MODES:
+        raise ValueError(
+            f"Unsupported canonical_mode={canonical_mode!r}. "
+            f"Expected one of {list(VALID_CANONICAL_MODES)}."
+        )
+    if ignore_index != IGNORE_INDEX:
+        raise ValueError(f"canonicalize_foreground expects ignore_index={IGNORE_INDEX}, got {ignore_index}.")
+    if canonical_mode == "full_masked":
+        if len(grid20) != canonical_size or any(len(row) != canonical_size for row in grid20):
+            raise ValueError(
+                f"full_masked canonicalization expects {canonical_size}x{canonical_size} grid, "
+                f"got {len(grid20)}x{len(grid20[0]) if grid20 else 0}."
+            )
+        fg_mask20 = [[1 if int(value) != background_class_id else 0 for value in row] for row in grid20]
+        bbox = bbox_from_mask([[bool(value) for value in row] for row in fg_mask20])
+        if bbox["area_ratio"] <= 0.0:
+            fg_y20 = [[ignore_index for _ in range(canonical_size)] for _ in range(canonical_size)]
+            return {
+                "fg_y20": fg_y20,
+                "fg_mask20": fg_mask20,
+                "bbox": bbox,
+                "is_empty_foreground": True,
+                "crop_y": [],
+                "crop_mask": [],
+                "canonical_mode": canonical_mode,
+            }
+        fg_y20 = []
+        for y_pos in range(canonical_size):
+            row: list[int] = []
+            for x_pos in range(canonical_size):
+                value = int(grid20[y_pos][x_pos])
+                row.append(value if value != background_class_id else ignore_index)
+            fg_y20.append(row)
+        validate_foreground_labels(fg_y20, fg_mask20, canonical_size=canonical_size, context="canonicalize_foreground(full_masked)")
+        return {
+            "fg_y20": fg_y20,
+            "fg_mask20": fg_mask20,
+            "bbox": bbox,
+            "is_empty_foreground": False,
+            "crop_y": [],
+            "crop_mask": [],
+            "canonical_mode": canonical_mode,
+        }
     torch = _require_torch()
     functional = __import__("importlib").import_module("torch.nn.functional")
     fg_mask = [[value != background_class_id for value in row] for row in grid20]
     bbox = bbox_from_mask(fg_mask)
     if bbox["area_ratio"] <= 0.0:
-        fg_y20 = [[IGNORE_INDEX for _ in range(canonical_size)] for _ in range(canonical_size)]
+        fg_y20 = [[ignore_index for _ in range(canonical_size)] for _ in range(canonical_size)]
         fg_mask20 = [[0 for _ in range(canonical_size)] for _ in range(canonical_size)]
         return {
             "fg_y20": fg_y20,
@@ -303,6 +377,7 @@ def canonicalize_foreground(grid20: list[list[int]], background_class_id: int, c
             "is_empty_foreground": True,
             "crop_y": [],
             "crop_mask": [],
+            "canonical_mode": canonical_mode,
         }
     x0, y0, x1, y1 = int(bbox["x0"]), int(bbox["y0"]), int(bbox["x1"]), int(bbox["y1"])
     crop_y = [row[x0 : x1 + 1] for row in grid20[y0 : y1 + 1]]
@@ -316,7 +391,7 @@ def canonicalize_foreground(grid20: list[list[int]], background_class_id: int, c
     mask_tensor = getattr(torch, "tensor")([[1.0 if value else 0.0 for value in row] for row in crop_mask], dtype=getattr(torch, "float32")).unsqueeze(0).unsqueeze(0)
     resized_labels = functional.interpolate(label_tensor, size=(new_h, new_w), mode="nearest").squeeze(0).squeeze(0).round().to(dtype=getattr(torch, "long"))
     resized_mask = functional.interpolate(mask_tensor, size=(new_h, new_w), mode="nearest").squeeze(0).squeeze(0) >= 0.5
-    fg_y20 = [[IGNORE_INDEX for _ in range(canonical_size)] for _ in range(canonical_size)]
+    fg_y20 = [[ignore_index for _ in range(canonical_size)] for _ in range(canonical_size)]
     fg_mask20 = [[0 for _ in range(canonical_size)] for _ in range(canonical_size)]
     offset_y = (canonical_size - new_h) // 2
     offset_x = (canonical_size - new_w) // 2
@@ -327,7 +402,7 @@ def canonicalize_foreground(grid20: list[list[int]], background_class_id: int, c
             if bool(resized_mask[y_pos, x_pos].item()):
                 fg_mask20[out_y][out_x] = 1
                 fg_y20[out_y][out_x] = int(resized_labels[y_pos, x_pos].item())
-    validate_foreground_labels(fg_y20, fg_mask20, canonical_size=canonical_size, context="canonicalize_foreground")
+    validate_foreground_labels(fg_y20, fg_mask20, canonical_size=canonical_size, context="canonicalize_foreground(bbox_crop)")
     return {
         "fg_y20": fg_y20,
         "fg_mask20": fg_mask20,
@@ -335,6 +410,7 @@ def canonicalize_foreground(grid20: list[list[int]], background_class_id: int, c
         "is_empty_foreground": False,
         "crop_y": crop_y,
         "crop_mask": [[1 if value else 0 for value in row] for row in crop_mask],
+        "canonical_mode": canonical_mode,
     }
 
 

@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_foreground_cache_fields, resolve_manifest_path, validate_foreground_labels
+from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
 
 
 def _require_sklearn() -> object:
@@ -61,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     data_cf = config["data"]
     planner_cf = config["planner"]
+    canonical_mode = resolve_canonical_mode(data_cf)
+    ignore_index = require_ignore_index(data_cf)
     manifest_path = Path(args.manifest or data_cf["train_manifest"])
     output_dir = Path(data_cf["cache_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -81,7 +83,13 @@ def main(argv: list[str] | None = None) -> int:
         _ = resolve_manifest_path(row["input_path"], manifest_root, sample_id=sample_id, field_name="input_path")
         _ = resolve_manifest_path(row["index_path"], manifest_root, sample_id=sample_id, field_name="index_path")
         y20 = load_label_grid(target_path, sample_id=sample_id)
-        canonical = canonicalize_foreground(y20, background_class_id=int(data_cf["background_class_id"]), canonical_size=int(data_cf["canonical_size"]))
+        canonical = canonicalize_foreground(
+            y20,
+            background_class_id=int(data_cf["background_class_id"]),
+            canonical_size=int(data_cf["canonical_size"]),
+            canonical_mode=canonical_mode,
+            ignore_index=ignore_index,
+        )
         descriptor = foreground_descriptor(canonical["fg_y20"], canonical["fg_mask20"], canonical["bbox"])
         validate_foreground_labels(canonical["fg_y20"], canonical["fg_mask20"], canonical_size=int(data_cf["canonical_size"]), context=f"cache[{sample_id}]")
         ensure_descriptor_dim(descriptor["descriptor"], context=f"cache[{sample_id}]")
@@ -97,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             "fg_y20": canonical["fg_y20"],
             "fg_mask20": canonical["fg_mask20"],
             "is_empty_foreground": bool(canonical["is_empty_foreground"]),
+            "canonical_mode": canonical_mode,
             "fg_area": fg_area,
             "bbox_stats": bbox_vector(canonical["bbox"], canonical_size=int(data_cf["canonical_size"])),
             **descriptor,
@@ -231,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             "manifest_root": str(manifest_root),
             "canonical_size": int(data_cf["canonical_size"]),
             "background_class_id": int(data_cf["background_class_id"]),
-            "ignore_index": IGNORE_INDEX,
+            "ignore_index": ignore_index,
+            "canonical_mode": canonical_mode,
             "split": "train" if is_train_like else ("val" if "val" in split_name else "test"),
             "source_kmeans_cache": str(args.kmeans_source_cache) if args.kmeans_source_cache is not None else None,
         },

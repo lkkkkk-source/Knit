@@ -2,8 +2,10 @@ data:
   train_manifest: outputs/manifests/inverse_rendering_train.jsonl
   val_manifest: outputs/manifests/inverse_rendering_val.jsonl
   cache_dir: knit_decode/struct_foreground_v1/cache/foreground_v1
+  canonical_mode: full_masked
   canonical_size: 20
   background_class_id: 0
+  ignore_index: -100
 
 planner:
   num_modes_per_category: 16

@@ -6,7 +6,7 @@ from pathlib import Path
 from .compose_foreground import compose_foreground
 from .inspect_foreground_planner import _require_torch
 from .models.foreground_planner import ForegroundCanonicalPlanner
-from .utils import bbox_from_mask, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, normalized_l2_between, print_progress, require_foreground_cache_fields, save_binary_map, save_json, save_jsonl, save_label_map
+from .utils import bbox_from_mask, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, normalized_l2_between, print_progress, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_map
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,7 +42,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     config = load_config(args.config)
+    canonical_mode = resolve_canonical_mode(config["data"])
     payload = _require_torch().load(args.checkpoint, map_location="cpu")
+    checkpoint_canonical_mode = str(checkpoint_get(payload, "canonical_mode"))
+    if checkpoint_canonical_mode != canonical_mode:
+        raise ValueError(
+            f"Canonical mode mismatch: checkpoint has {checkpoint_canonical_mode!r}, config expects {canonical_mode!r}."
+        )
     metrics = payload.get("metrics", {})
     category_to_id = checkpoint_get(payload, "category_to_id")
     train_categories = list(checkpoint_get(payload, "train_categories"))
@@ -121,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             centroid_bbox_stats.append(centroid["centroid_bbox_stats"])
         out = model(
             category_ids,
+            getattr(torch, "tensor")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z], dtype=getattr(torch, "float32")).unsqueeze(1),
             getattr(torch, "tensor")(centroid_label_hist, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_row_projection, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_col_projection, dtype=getattr(torch, "float32")),
@@ -175,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     for out_index, row in enumerate(selected):
         sample_dir = output_dir / f"candidate_{out_index:03d}"
         sample_dir.mkdir(parents=True, exist_ok=True)
-        composed = compose_foreground(row["fg_mask"], row["fg_label"], row["bbox_pred"], sample_dir)["composed_y20"]
+        composed = compose_foreground(row["fg_mask"], row["fg_label"], row["bbox_pred"], sample_dir, canonical_mode=canonical_mode)["composed_y20"]
         save_binary_map(row["fg_mask"], sample_dir / "fg_mask20.png", scale=12)
         save_label_map(row["fg_label"], sample_dir / "fg_label20.png", scale=12)
         save_label_map(composed, sample_dir / "composed_y20.png", scale=12)

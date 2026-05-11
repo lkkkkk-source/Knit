@@ -23,6 +23,7 @@ class ForegroundCanonicalPlanner:
         grammar_dim: int = 16,
         adjacency_dim: int = 256,
         bbox_dim: int = 10,
+        mask_channels: int = 1,
     ) -> object:
         torch, nn = _require_torch()
 
@@ -31,8 +32,15 @@ class ForegroundCanonicalPlanner:
                 super().__init__()
                 self.category_embed = nn.Embedding(num_categories, category_embed_dim)
                 self.mode_embed = nn.Embedding(max_num_modes, mode_embed_dim)
+                self.centroid_mask_stem = nn.Sequential(
+                    nn.Conv2d(mask_channels, 8, kernel_size=3, padding=1),
+                    nn.GELU(),
+                    nn.Conv2d(8, 8, kernel_size=3, padding=1),
+                    nn.GELU(),
+                    nn.AdaptiveAvgPool2d((4, 4)),
+                )
                 self.trunk = nn.Sequential(
-                    nn.Linear(category_embed_dim + mode_embed_dim + 16 + 20 + 20 + 256 + 6 + bbox_dim, hidden_dim),
+                    nn.Linear(category_embed_dim + mode_embed_dim + 16 + 20 + 20 + 256 + 6 + bbox_dim + 8 * 4 * 4, hidden_dim),
                     nn.GELU(),
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
@@ -49,6 +57,7 @@ class ForegroundCanonicalPlanner:
             def forward(
                 self,
                 category_ids: object,
+                centroid_fg_mask_prob: object,
                 centroid_label_hist: object,
                 centroid_row_projection: object,
                 centroid_col_projection: object,
@@ -66,10 +75,12 @@ class ForegroundCanonicalPlanner:
                 if local_z is None:
                     local_z = local_z_logits.argmax(dim=-1)
                 mode_embed = self.mode_embed(local_z)
+                centroid_mask_feat = self.centroid_mask_stem(centroid_fg_mask_prob).reshape(category_embed.shape[0], -1)
                 cond = getattr(torch, "cat")(
                     [
                         category_embed,
                         mode_embed,
+                        centroid_mask_feat,
                         centroid_label_hist,
                         centroid_row_projection,
                         centroid_col_projection,

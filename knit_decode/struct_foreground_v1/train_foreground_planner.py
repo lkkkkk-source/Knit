@@ -9,7 +9,7 @@ from typing import cast
 from .dataset import build_dataloader, load_manifest
 from .models.foreground_planner import ForegroundCanonicalPlanner
 from .compose_foreground import compose_foreground
-from .utils import IGNORE_INDEX, finish_progress, format_metric_line, foreground_area, label_diversity_on_fg, load_config, print_progress, require_foreground_cache_fields
+from .utils import IGNORE_INDEX, finish_progress, format_metric_line, foreground_area, label_diversity_on_fg, load_config, print_progress, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode
 
 
 def _require_torch() -> tuple[object, object]:
@@ -84,6 +84,7 @@ def _init_generated_metric_state() -> dict[str, object]:
         "fg_label_acc_on_fg_sum": 0.0,
         "foreground_label_ce_sum": 0.0,
         "bbox_l1_sum": 0.0,
+        "centroid_mask_loss_sum": 0.0,
         "row_projection_l1_sum": 0.0,
         "col_projection_l1_sum": 0.0,
         "adjacency_l1_sum": 0.0,
@@ -149,6 +150,7 @@ def _accumulate_generated_metrics(
     metric_state["fg_label_acc_on_fg_sum"] = float(metric_state["fg_label_acc_on_fg_sum"]) + label_acc * batch_size
     metric_state["foreground_label_ce_sum"] = float(metric_state["foreground_label_ce_sum"]) + float(losses["fg_ce"]) * batch_size
     metric_state["bbox_l1_sum"] = float(metric_state["bbox_l1_sum"]) + float(losses["bbox"]) * batch_size
+    metric_state["centroid_mask_loss_sum"] = float(metric_state["centroid_mask_loss_sum"]) + float(losses["centroid_mask"]) * batch_size
     metric_state["row_projection_l1_sum"] = float(metric_state["row_projection_l1_sum"]) + float(losses["row"]) * batch_size
     metric_state["col_projection_l1_sum"] = float(metric_state["col_projection_l1_sum"]) + float(losses["col"]) * batch_size
     metric_state["adjacency_l1_sum"] = float(metric_state["adjacency_l1_sum"]) + float(losses["adj"]) * batch_size
@@ -218,6 +220,7 @@ def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, fl
         "effective_local_modes": float(_effective_modes(mode_hist)),
         "sampled_unique_local_z_count": float(len(local_counts)),
         "bbox_l1": float(metric_state["bbox_l1_sum"]) / denom,
+        "centroid_mask_loss": float(metric_state["centroid_mask_loss_sum"]) / denom,
         "row_projection_l1": float(metric_state["row_projection_l1_sum"]) / denom,
         "col_projection_l1": float(metric_state["col_projection_l1_sum"]) / denom,
         "adjacency_l1": float(metric_state["adjacency_l1_sum"]) / denom,
@@ -265,6 +268,7 @@ def _evaluate_loader(model: object, loader: object, device: object, torch: objec
                 raise ValueError("Validation batch contains invalid local_z relative to mode_mask.")
             outputs = model(
                 batch["category_ids"].to(device),
+                centroid_fg_mask_prob=batch["centroid_fg_mask_prob"].to(device),
                 centroid_label_hist=batch["centroid_label_hist"].to(device),
                 centroid_row_projection=batch["centroid_row_projection"].to(device),
                 centroid_col_projection=batch["centroid_col_projection"].to(device),
@@ -277,8 +281,9 @@ def _evaluate_loader(model: object, loader: object, device: object, torch: objec
             fg_target = batch["fg_y20"].to(device)
             fg_label_target = getattr(torch, "where")(fg_target >= 1, fg_target - 1, fg_target)
             losses = {
-                "fg_ce": float(functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=IGNORE_INDEX).item()),
+                "fg_ce": float(functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=ignore_index).item()),
                 "bbox": float(functional.l1_loss(outputs["bbox_pred"], batch["bbox_stats"].to(device)).item()),
+                "centroid_mask": float(functional.binary_cross_entropy_with_logits(outputs["fg_mask_logits"].squeeze(1), batch["centroid_fg_mask_prob"].to(device).squeeze(1)).item()),
                 "row": float(functional.l1_loss(outputs["row_projection_pred"], batch["row_projection"].to(device)).item()),
                 "col": float(functional.l1_loss(outputs["col_projection_pred"], batch["col_projection"].to(device)).item()),
                 "grammar": float(functional.l1_loss(outputs["grammar_signature_pred"], batch["grammar_signature"].to(device)).item()),
@@ -306,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     data_cf = config["data"]
     planner_cf = config["planner"]
     train_cf = config["train"]
+    canonical_mode = resolve_canonical_mode(data_cf)
+    ignore_index = require_ignore_index(data_cf)
     loss_weights = cast(dict[str, float], train_cf.get("loss_weights", {}))
     train_manifest = Path(data_cf["train_manifest"])
     val_manifest = Path(data_cf["val_manifest"])
@@ -328,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
             [
                 ("train_cache_path", str(train_cache)),
                 ("val_cache_path", str(val_cache)),
+                ("canonical_mode", canonical_mode),
                 ("train_items", len(train_dataset)),
                 ("val_items_total", val_total_items),
                 ("val_seen_items", len(val_dataset)),
@@ -372,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("Train batch contains invalid local_z relative to mode_mask.")
             outputs = model(
                 batch["category_ids"].to(device),
+                centroid_fg_mask_prob=batch["centroid_fg_mask_prob"].to(device),
                 centroid_label_hist=batch["centroid_label_hist"].to(device),
                 centroid_row_projection=batch["centroid_row_projection"].to(device),
                 centroid_col_projection=batch["centroid_col_projection"].to(device),
@@ -386,7 +395,8 @@ def main(argv: list[str] | None = None) -> int:
             fg_target = batch["fg_y20"].to(device)
             fg_label_target = fg_target.clone()
             fg_label_target = getattr(torch, "where")(fg_label_target >= 1, fg_label_target - 1, fg_label_target)
-            fg_ce = functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=IGNORE_INDEX)
+            fg_ce = functional.cross_entropy(outputs["fg_label_logits"], fg_label_target, ignore_index=ignore_index)
+            centroid_mask_loss = functional.binary_cross_entropy_with_logits(outputs["fg_mask_logits"].squeeze(1), batch["centroid_fg_mask_prob"].to(device).squeeze(1))
             bbox_loss = functional.l1_loss(outputs["bbox_pred"], batch["bbox_stats"].to(device))
             row_loss = functional.l1_loss(outputs["row_projection_pred"], batch["row_projection"].to(device))
             col_loss = functional.l1_loss(outputs["col_projection_pred"], batch["col_projection"].to(device))
@@ -397,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
                 float(loss_weights.get("local_z", 1.0)) * z_loss
                 + float(loss_weights.get("fg_mask", 1.0)) * fg_mask_loss
                 + float(loss_weights.get("fg_label", 1.0)) * fg_ce
+                + float(loss_weights.get("centroid_mask_weight", 0.05)) * centroid_mask_loss
                 + float(loss_weights.get("bbox", 1.0)) * bbox_loss
                 + float(loss_weights.get("row_projection", 1.0)) * row_loss
                 + float(loss_weights.get("col_projection", 1.0)) * col_loss
@@ -410,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
             losses = {
                 "fg_ce": float(fg_ce.item()),
                 "bbox": float(bbox_loss.item()),
+                "centroid_mask": float(centroid_mask_loss.item()),
                 "row": float(row_loss.item()),
                 "col": float(col_loss.item()),
                 "grammar": float(grammar_loss.item()),
@@ -447,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch + 1,
             "config": config,
+            "canonical_mode": canonical_mode,
             "metrics": summary,
             "category_to_id": category_to_id,
             "id_to_category": mapping["id_to_category"],
@@ -501,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
         "best_metric_name": best_metric_name,
         "best_metric_value": best_metric_value,
         "config": config,
+        "canonical_mode": canonical_mode,
     }
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
     return 0

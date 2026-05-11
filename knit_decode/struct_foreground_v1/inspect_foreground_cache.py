@@ -6,7 +6,7 @@ import random
 from pathlib import Path
 from typing import cast
 
-from .utils import EXPECTED_DESCRIPTOR_DIM, IGNORE_INDEX, format_metric_line, foreground_area, label_diversity_on_fg, save_json, save_jsonl
+from .utils import EXPECTED_DESCRIPTOR_DIM, IGNORE_INDEX, format_metric_line, foreground_area, label_diversity_on_fg, resolve_canonical_mode, save_json, save_jsonl
 
 
 REQUIRED_CACHE_KEYS = (
@@ -139,6 +139,10 @@ def _overlay_grid_for_display(fg_y20: list[list[int]], fg_mask20: list[list[int]
     return _label_grid_for_display(fg_y20, fg_mask20)
 
 
+def _original_y20_grid_for_display(original_y20: list[list[int]]) -> list[list[int]]:
+    return [[max(0, min(16, int(value))) for value in row] for row in original_y20]
+
+
 def _official_palette() -> list[tuple[int, int, int]]:
     try:
         from knit_decode.parser_t_inverse.palette import OFFICIAL_PALETTE
@@ -243,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = _require_torch().load(cache_path, map_location="cpu")
     _require_cache_fields(payload)
+    config = payload.get("config", {})
+    data_cf = config.get("data", {})
+    canonical_mode = resolve_canonical_mode(data_cf)
     if args.category not in payload["category_to_num_modes"]:
         raise ValueError(f"Category {args.category!r} not found in category_to_num_modes.")
     rng = random.Random(int(args.seed))
@@ -252,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     sample_count = min(int(args.num_samples), len(items))
     samples = rng.sample(items, sample_count) if sample_count < len(items) else list(items)
 
+    original_tiles = []
     y20_tiles = []
     mask_tiles = []
     overlay_tiles = []
@@ -262,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     for index, item in enumerate(samples):
         fg_y20 = _to_python_grid(item["fg_y20"], context=f"item[{item['sample_id']}].fg_y20")
         fg_mask20 = _to_python_grid(item["fg_mask20"], context=f"item[{item['sample_id']}].fg_mask20")
+        original_y20 = _to_python_grid(item["original_y20"], context=f"item[{item['sample_id']}].original_y20")
         descriptor = item.get("descriptor")
         if hasattr(descriptor, "tolist"):
             descriptor = descriptor.tolist()
@@ -270,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         label_grid = _label_grid_for_display(fg_y20, fg_mask20)
         mask_grid = _mask_grid_for_display(fg_mask20)
         overlay_grid = _overlay_grid_for_display(fg_y20, fg_mask20)
+        original_tiles.append(_grid_to_rgb(_original_y20_grid_for_display(original_y20), mode="label"))
         y20_tiles.append(_grid_to_rgb(label_grid, mode="label"))
         mask_tiles.append(_grid_to_rgb(mask_grid, mode="mask"))
         overlay_tiles.append(_grid_to_rgb(overlay_grid, mode="label"))
@@ -293,9 +303,9 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
     sample_labels = [str(row["sample_id"]) for row in sample_rows]
-    _save_tiled_grid(y20_tiles, sample_labels, output_dir / f"{args.category}_real_fg_y20_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
-    _save_tiled_grid(mask_tiles, sample_labels, output_dir / f"{args.category}_real_fg_mask_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
-    _save_tiled_grid(overlay_tiles, sample_labels, output_dir / f"{args.category}_real_fg_overlay_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
+    _save_tiled_grid(original_tiles, sample_labels, output_dir / f"{args.category}_real_full_y20_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
+    _save_tiled_grid(mask_tiles, sample_labels, output_dir / f"{args.category}_real_full_fg_mask_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
+    _save_tiled_grid(overlay_tiles, sample_labels, output_dir / f"{args.category}_real_full_fg_y20_ignore_background_grid.png", cols=int(args.cols), cell_size=int(args.cell_size))
 
     centroid_entries = payload["centroid_sketch_by_category"].get(args.category)
     if centroid_entries is None:
@@ -373,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sample_stats = {
         "category": args.category,
+        "canonical_mode": canonical_mode,
         "num_total_items": len(items),
         "num_visualized": len(samples),
         "fg_area_mean": sum(fg_areas) / float(max(1, len(fg_areas))),

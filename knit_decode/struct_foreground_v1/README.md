@@ -15,6 +15,7 @@ Key constraints:
 - instruction17 only for training/eval/cache
 - background ignored in main foreground CE
 - final output is still `20x20 instruction17`
+- default `canonical_mode=full_masked`
 
 Minimal commands:
 
@@ -56,5 +57,7 @@ Notes:
 - train cache is saved as `foreground_cache_train.pt`
 - val cache is saved as `foreground_cache_val.pt`
 - val/test cache assignment must use `--kmeans-source-cache` from train cache and never refit KMeans
+- full_masked keeps the original `20x20` instruction17 coordinates and ignores background class `0` in foreground CE
+- bbox_crop is retained only as a legacy non-default path
 - `checkpoint_last.pt` is saved every epoch; best `val_valid_foreground_rate` is saved as `checkpoint.pt`
 - `eval_foreground_structure.py` no longer emits placeholder metrics; it now fails fast until paired supervised references are wired in explicitly

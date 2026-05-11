@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import TypedDict, cast
 
-from .utils import IGNORE_INDEX, EXPECTED_DESCRIPTOR_DIM, validate_foreground_labels
+from .utils import IGNORE_INDEX, EXPECTED_DESCRIPTOR_DIM, require_ignore_index, resolve_canonical_mode, validate_foreground_labels
 
 
 class ForegroundSample(TypedDict):
@@ -63,6 +63,9 @@ class ForegroundDataset:
         categories = sorted({sample["category"] for sample in self.samples})
         self.category_to_id = category_to_id or {category: index for index, category in enumerate(categories)}
         planner_cf = self.cache_payload.get("config", {}).get("planner", {})
+        data_cf = self.cache_payload.get("config", {}).get("data", {})
+        self.canonical_mode = resolve_canonical_mode(data_cf)
+        self.ignore_index = require_ignore_index(data_cf)
         self.max_num_modes_per_category = int(planner_cf.get("max_num_modes_per_category", planner_cf.get("num_modes_per_category", 16)))
         self._validate_alignment()
         if self.exclude_unseen_categories:
@@ -96,6 +99,11 @@ class ForegroundDataset:
                 if str(cached.get(key)) != str(sample[key]):
                     raise ValueError(f"Path mismatch for sample_id={sample['sample_id']} field={key}")
             validate_foreground_labels(cached["fg_y20"], cached["fg_mask20"], context=f"dataset[{sample['sample_id']}]")
+            if cached.get("canonical_mode", self.canonical_mode) != self.canonical_mode:
+                raise ValueError(
+                    f"Canonical mode mismatch for sample_id={sample['sample_id']}: "
+                    f"cache has {cached.get('canonical_mode')!r}, dataset expects {self.canonical_mode!r}"
+                )
             descriptor = cached.get("descriptor")
             if not isinstance(descriptor, list) or len(descriptor) != EXPECTED_DESCRIPTOR_DIM:
                 raise ValueError(
@@ -161,8 +169,8 @@ class ForegroundDataset:
             "adjacency_signature": getattr(torch, "tensor")(cached["adjacency_signature"], dtype=getattr(torch, "float32")),
             "descriptor": getattr(torch, "tensor")(cached["descriptor"], dtype=getattr(torch, "float32")),
             "fg_area": getattr(torch, "tensor")(float(cached["fg_area"]), dtype=getattr(torch, "float32")),
-            "centroid_fg_mask_prob": getattr(torch, "tensor")(centroid_fg_mask_prob, dtype=getattr(torch, "float32")),
-            "centroid_fg_mask_bin": getattr(torch, "tensor")(centroid_fg_mask_bin, dtype=getattr(torch, "float32")),
+            "centroid_fg_mask_prob": getattr(torch, "tensor")(centroid_fg_mask_prob, dtype=getattr(torch, "float32")).unsqueeze(0),
+            "centroid_fg_mask_bin": getattr(torch, "tensor")(centroid_fg_mask_bin, dtype=getattr(torch, "float32")).unsqueeze(0),
             "centroid_label_hist": getattr(torch, "tensor")(centroid.get("centroid_label_hist", [0.0] * 16), dtype=getattr(torch, "float32")),
             "centroid_row_projection": getattr(torch, "tensor")(centroid.get("centroid_row_projection", [0.0] * 20), dtype=getattr(torch, "float32")),
             "centroid_col_projection": getattr(torch, "tensor")(centroid.get("centroid_col_projection", [0.0] * 20), dtype=getattr(torch, "float32")),
@@ -170,6 +178,7 @@ class ForegroundDataset:
             "centroid_transition_stats": getattr(torch, "tensor")(centroid.get("centroid_transition_stats", [0.0] * 6), dtype=getattr(torch, "float32")),
             "centroid_bbox_stats": getattr(torch, "tensor")(centroid.get("centroid_bbox_stats", [0.0] * 10), dtype=getattr(torch, "float32")),
             "original_y20": getattr(torch, "tensor")(cached["original_y20"], dtype=getattr(torch, "long")),
+            "canonical_mode": str(self.canonical_mode),
             "metadata": cached,
         }
 
@@ -201,6 +210,7 @@ def collate_batch(batch: list[dict[str, object]]) -> dict[str, object]:
         "centroid_transition_stats": getattr(torch, "stack")([sample["centroid_transition_stats"] for sample in batch]),
         "centroid_bbox_stats": getattr(torch, "stack")([sample["centroid_bbox_stats"] for sample in batch]),
         "original_y20": getattr(torch, "stack")([sample["original_y20"] for sample in batch]),
+        "canonical_mode": batch[0]["canonical_mode"] if batch else "full_masked",
         "metadata": [sample["metadata"] for sample in batch],
     }
 
