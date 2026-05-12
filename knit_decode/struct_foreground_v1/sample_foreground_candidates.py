@@ -5,8 +5,7 @@ from pathlib import Path
 
 from .compose_foreground import compose_foreground
 from .inspect_foreground_planner import _require_torch
-from .models.foreground_planner import ForegroundCanonicalPlanner
-from .utils import bbox_from_mask, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_map
+from .utils import bbox_from_mask, build_planner_from_checkpoint_payload, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_map
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     canonical_mode = resolve_canonical_mode(config["data"])
     payload = _require_torch().load(args.checkpoint, map_location="cpu")
     checkpoint_compatibility = str(checkpoint_get(payload, "checkpoint_compatibility", required=False) or "")
-    if checkpoint_compatibility != "spatial-centroid-v2":
+    if checkpoint_compatibility and checkpoint_compatibility != "spatial-centroid-v2":
         raise ValueError(
             "Checkpoint is incompatible with the current spatial-centroid planner. "
             "Please retrain with the rebuilt full_masked cache and the current struct_foreground_v1 code."
@@ -83,20 +82,20 @@ def main(argv: list[str] | None = None) -> int:
             f"category not available in trained foreground prior: {args.category}\n"
             f"available categories: {sorted(train_categories)}"
         )
-    grammar_dim = int(metrics.get("grammar_signature_dim", 17))
-    adjacency_dim = int(metrics.get("adjacency_signature_dim", 256))
-    bbox_dim = int(metrics.get("bbox_dim", 10))
-    model = ForegroundCanonicalPlanner(
-        num_categories=len(category_to_id),
-        max_num_modes=int(config["planner"]["num_modes_per_category"]),
-        hidden_dim=int(config["planner"]["hidden_dim"]),
-        category_embed_dim=int(config["planner"]["category_embed_dim"]),
-        mode_embed_dim=int(config["planner"]["mode_embed_dim"]),
-        grammar_dim=grammar_dim,
-        adjacency_dim=adjacency_dim,
-        bbox_dim=bbox_dim,
+    model, model_kwargs, load_debug = build_planner_from_checkpoint_payload(payload, config)
+    print(
+        format_metric_line(
+            "sample-foreground-load:",
+            [
+                ("source", load_debug["source"]),
+                ("checkpoint_grammar_head_shape", load_debug["checkpoint_grammar_head_weight_shape"]),
+                ("constructed_grammar_head_shape", load_debug["constructed_grammar_head_weight_shape"]),
+                ("grammar_dim", model_kwargs["grammar_dim"]),
+                ("hidden_dim", model_kwargs["hidden_dim"]),
+                ("strict_load", load_debug["strict_load_success"]),
+            ],
+        )
     )
-    model.load_state_dict(payload["model_state_dict"])
     model.eval()
     oversample = int(config["sampling"]["planner_oversample"])
     num_valid = int(config["sampling"]["num_valid_plans"])
@@ -105,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     with getattr(torch, "no_grad")():
         num_modes = int(category_to_num_modes[args.category])
         centroid_source = cache_payload["centroid_sketch_by_category"].get(args.category, {})
-        max_num_modes = int(config["planner"]["num_modes_per_category"])
+        max_num_modes = int(model_kwargs["max_num_modes"])
         mode_mask = getattr(torch, "tensor")([[1 if k < num_modes else 0 for k in range(max_num_modes)] for _ in range(oversample)], dtype=getattr(torch, "bool"))
         category_embed = model.category_embed(category_ids)
         z_logits = model.local_z_head(category_embed).masked_fill(mode_mask.logical_not(), float("-inf"))
@@ -136,8 +135,8 @@ def main(argv: list[str] | None = None) -> int:
             centroid_bbox_stats.append(centroid["centroid_bbox_stats"])
         out = model(
             category_ids,
-            getattr(torch, "tensor")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z], dtype=getattr(torch, "float32")).unsqueeze(1),
-            getattr(torch, "tensor")(centroid_label_prob_16, dtype=getattr(torch, "float32")),
+            getattr(torch, "stack")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z]).to(dtype=getattr(torch, "float32")),
+            getattr(torch, "stack")(centroid_label_prob_16).to(dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_label_hist, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_row_projection, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_col_projection, dtype=getattr(torch, "float32")),

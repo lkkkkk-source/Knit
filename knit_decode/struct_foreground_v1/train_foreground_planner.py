@@ -430,15 +430,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     if len(val_dataset) == 0:
         _warn("validation seen split has 0 items after excluding unseen categories; best metric will fallback to train_valid_foreground_rate")
+    model_kwargs = {
+        "num_categories": len(category_to_id),
+        "max_num_modes": int(planner_cf["num_modes_per_category"]),
+        "hidden_dim": int(planner_cf["hidden_dim"]),
+        "category_embed_dim": int(planner_cf["category_embed_dim"]),
+        "mode_embed_dim": int(planner_cf["mode_embed_dim"]),
+        "grammar_dim": len(train_dataset[0]["grammar_signature"]),
+        "adjacency_dim": len(train_dataset[0]["adjacency_signature"]),
+        "bbox_dim": len(train_dataset[0]["bbox_stats"]),
+    }
     model = ForegroundCanonicalPlanner(
-        num_categories=len(category_to_id),
-        max_num_modes=int(planner_cf["num_modes_per_category"]),
-        hidden_dim=int(planner_cf["hidden_dim"]),
-        category_embed_dim=int(planner_cf["category_embed_dim"]),
-        mode_embed_dim=int(planner_cf["mode_embed_dim"]),
-        grammar_dim=len(train_dataset[0]["grammar_signature"]),
-        adjacency_dim=len(train_dataset[0]["adjacency_signature"]),
-        bbox_dim=len(train_dataset[0]["bbox_stats"]),
+        **model_kwargs,
     )
     model.to(device)
     optimizer = getattr(optim, "AdamW")(model.parameters(), lr=float(train_cf["learning_rate"]), weight_decay=float(train_cf["weight_decay"]))
@@ -609,6 +612,7 @@ def main(argv: list[str] | None = None) -> int:
             "bbox_dim": len(train_dataset[0]["bbox_stats"]),
             "max_num_modes": int(planner_cf["num_modes_per_category"]),
             "spatial_condition_channels": 17,
+            "model_kwargs": model_kwargs,
             "checkpoint_compatibility": "spatial-centroid-v2",
             "requires_cache_rebuild": True,
         }

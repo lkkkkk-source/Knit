@@ -33,6 +33,8 @@ class ForegroundCanonicalPlanner:
                 super().__init__()
                 self.category_embed = nn.Embedding(num_categories, category_embed_dim)
                 self.mode_embed = nn.Embedding(max_num_modes, mode_embed_dim)
+                # spatial_condition_channels stays 17 = 1 mask prior + 16 label priors.
+                # This is independent from grammar_dim, which follows the checkpoint/training target shape.
                 self.condition_stem = nn.Sequential(
                     nn.Conv2d(spatial_condition_channels, spatial_hidden_dim // 2, kernel_size=3, padding=1),
                     nn.GELU(),

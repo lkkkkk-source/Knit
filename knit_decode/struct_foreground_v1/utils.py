@@ -88,6 +88,92 @@ def checkpoint_get(payload: dict[str, object], key: str, *, required: bool = Tru
     return None
 
 
+def infer_model_kwargs_from_checkpoint_payload(payload: dict[str, object], config: dict[str, object]) -> tuple[dict[str, int], dict[str, object]]:
+    state_dict = payload.get("model_state_dict")
+    if not isinstance(state_dict, dict):
+        raise ValueError("Checkpoint is missing model_state_dict.")
+    checkpoint_model_kwargs = payload.get("model_kwargs")
+    source = "checkpoint_model_kwargs"
+    if isinstance(checkpoint_model_kwargs, dict):
+        model_kwargs = {key: int(value) for key, value in checkpoint_model_kwargs.items()}
+    else:
+        source = "state_dict_inference"
+
+        def _shape(key: str) -> tuple[int, ...]:
+            if key not in state_dict or not hasattr(state_dict[key], "shape"):
+                raise ValueError(f"Checkpoint model_state_dict is missing tensor {key!r}.")
+            return tuple(int(dim) for dim in state_dict[key].shape)
+
+        category_embed_shape = _shape("category_embed.weight")
+        mode_embed_shape = _shape("mode_embed.weight")
+        grammar_head_shape = _shape("grammar_head.weight")
+        adj_head_shape = _shape("adj_head.weight")
+        bbox_head_shape = _shape("bbox_head.weight")
+        if "condition_stem.0.weight" not in state_dict or "condition_stem.2.weight" not in state_dict:
+            raise ValueError(
+                "Checkpoint does not contain condition_stem.* weights, so it is not a compatible spatial-centroid foreground planner checkpoint. "
+                "This loader only supports the current struct_foreground_v1 spatial-centroid architecture with strict=True loading."
+            )
+        condition_stem_shape = _shape("condition_stem.0.weight")
+        condition_stem_hidden_shape = _shape("condition_stem.2.weight")
+        fg_label_head_shape = _shape("fg_label_head.weight")
+        fg_mask_head_shape = _shape("fg_mask_head.weight")
+        if len(fg_label_head_shape) != 4 or fg_label_head_shape[0] != 16:
+            raise ValueError(
+                f"Checkpoint fg_label_head.weight must be conv-style with 16 output channels for current struct_foreground_v1 spatial-centroid planner, got {fg_label_head_shape}."
+            )
+        if len(fg_mask_head_shape) != 4 or fg_mask_head_shape[0] != 1:
+            raise ValueError(
+                f"Checkpoint fg_mask_head.weight must be conv-style with 1 output channel for current struct_foreground_v1 spatial-centroid planner, got {fg_mask_head_shape}."
+            )
+        model_kwargs = {
+            "num_categories": category_embed_shape[0],
+            "max_num_modes": mode_embed_shape[0],
+            "hidden_dim": grammar_head_shape[1],
+            "category_embed_dim": category_embed_shape[1],
+            "mode_embed_dim": mode_embed_shape[1],
+            "grammar_dim": grammar_head_shape[0],
+            "adjacency_dim": adj_head_shape[0],
+            "bbox_dim": bbox_head_shape[0],
+            "spatial_condition_channels": condition_stem_shape[1],
+            "spatial_hidden_dim": condition_stem_hidden_shape[0],
+        }
+    debug_info = {
+        "source": source,
+        "checkpoint_grammar_head_weight_shape": tuple(int(dim) for dim in state_dict["grammar_head.weight"].shape),
+        "inferred_grammar_dim": int(model_kwargs["grammar_dim"]),
+        "inferred_hidden_dim": int(model_kwargs["hidden_dim"]),
+    }
+    return model_kwargs, debug_info
+
+
+def build_planner_from_checkpoint_payload(
+    payload: dict[str, object],
+    config: dict[str, object],
+    *,
+    device: object | None = None,
+) -> tuple[object, dict[str, int], dict[str, object]]:
+    from .models.foreground_planner import ForegroundCanonicalPlanner
+
+    model_kwargs, debug_info = infer_model_kwargs_from_checkpoint_payload(payload, config)
+    model = ForegroundCanonicalPlanner(**model_kwargs)
+    state_dict = payload.get("model_state_dict")
+    if not isinstance(state_dict, dict):
+        raise ValueError("Checkpoint is missing model_state_dict.")
+    checkpoint_shape = tuple(int(dim) for dim in state_dict["grammar_head.weight"].shape)
+    constructed_shape = tuple(int(dim) for dim in model.grammar_head.weight.shape)
+    if constructed_shape != checkpoint_shape:
+        raise ValueError(
+            f"Checkpoint/model grammar_head.weight mismatch before load: checkpoint={checkpoint_shape} constructed={constructed_shape}."
+        )
+    model.load_state_dict(state_dict, strict=True)
+    if device is not None:
+        model.to(device)
+    debug_info["constructed_grammar_head_weight_shape"] = constructed_shape
+    debug_info["strict_load_success"] = True
+    return model, model_kwargs, debug_info
+
+
 def require_foreground_cache_fields(
     cache_payload: dict[str, object],
     *,

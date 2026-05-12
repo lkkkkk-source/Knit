@@ -4,8 +4,7 @@ import argparse
 from pathlib import Path
 
 from .compose_foreground import compose_foreground
-from .models.foreground_planner import ForegroundCanonicalPlanner
-from .utils import bbox_from_mask, checkpoint_get, finish_progress, format_metric_line, foreground_area, foreground_descriptor, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map
+from .utils import bbox_from_mask, build_planner_from_checkpoint_payload, checkpoint_get, finish_progress, format_metric_line, foreground_area, foreground_descriptor, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map
 
 
 def _require_torch() -> object:
@@ -25,15 +24,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-samples", type=int, default=8)
     parser.add_argument("--output-dir", type=Path, default=None)
     return parser
-
-
-def _checkpoint_dim(payload: dict[str, object], metrics: dict[str, object], metric_key: str, state_key: str) -> int:
-    if metric_key in metrics:
-        return int(metrics[metric_key])
-    weight = payload["model_state_dict"].get(state_key)
-    if weight is None:
-        raise KeyError(f"Missing {metric_key} and state key {state_key} in checkpoint.")
-    return int(weight.shape[0])
 
 
 def _descriptor_margin(descriptor: list[float], category: str, cache_payload: dict[str, object]) -> tuple[float, float, float]:
@@ -62,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     canonical_mode = resolve_canonical_mode(config["data"])
     payload = _require_torch().load(args.checkpoint, map_location="cpu")
     checkpoint_compatibility = str(checkpoint_get(payload, "checkpoint_compatibility", required=False) or "")
-    if checkpoint_compatibility != "spatial-centroid-v2":
+    if checkpoint_compatibility and checkpoint_compatibility != "spatial-centroid-v2":
         raise ValueError(
             "Checkpoint is incompatible with the current spatial-centroid planner. "
             "Please retrain with the rebuilt full_masked cache and the current struct_foreground_v1 code."
@@ -102,21 +92,20 @@ def main(argv: list[str] | None = None) -> int:
             f"category not available in trained foreground prior: {args.category}\n"
             f"available categories: {sorted(train_categories)}"
         )
-    grammar_dim = _checkpoint_dim(payload, metrics, "grammar_signature_dim", "grammar_head.weight")
-    adjacency_dim = _checkpoint_dim(payload, metrics, "adjacency_signature_dim", "adj_head.weight")
-    bbox_dim = _checkpoint_dim(payload, metrics, "bbox_dim", "bbox_head.weight")
-    max_num_modes = int(checkpoint_get(payload, "max_num_modes"))
-    model = ForegroundCanonicalPlanner(
-        num_categories=len(category_to_id),
-        max_num_modes=max_num_modes,
-        hidden_dim=int(config["planner"]["hidden_dim"]),
-        category_embed_dim=int(config["planner"]["category_embed_dim"]),
-        mode_embed_dim=int(config["planner"]["mode_embed_dim"]),
-        grammar_dim=grammar_dim,
-        adjacency_dim=adjacency_dim,
-        bbox_dim=bbox_dim,
+    model, model_kwargs, load_debug = build_planner_from_checkpoint_payload(payload, config)
+    print(
+        format_metric_line(
+            "inspect-foreground-load:",
+            [
+                ("source", load_debug["source"]),
+                ("checkpoint_grammar_head_shape", load_debug["checkpoint_grammar_head_weight_shape"]),
+                ("constructed_grammar_head_shape", load_debug["constructed_grammar_head_weight_shape"]),
+                ("grammar_dim", model_kwargs["grammar_dim"]),
+                ("hidden_dim", model_kwargs["hidden_dim"]),
+                ("strict_load", load_debug["strict_load_success"]),
+            ],
+        )
     )
-    model.load_state_dict(payload["model_state_dict"])
     model.eval()
     torch = _require_torch()
     category_ids = getattr(torch, "full")((int(args.num_samples),), category_id, dtype=getattr(torch, "long"))
@@ -137,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         for index in range(int(args.num_samples)):
             mode_index = index % max(1, num_modes)
             local_z.append(mode_index)
-            mode_mask.append([1 if k < num_modes else 0 for k in range(max_num_modes)])
+            mode_mask.append([1 if k < num_modes else 0 for k in range(int(model_kwargs["max_num_modes"]))])
             centroid = centroid_source.get(mode_index)
             if centroid is None:
                 raise ValueError(f"Missing centroid sketch for category={args.category!r} local_z={mode_index}.")
@@ -152,8 +141,8 @@ def main(argv: list[str] | None = None) -> int:
             centroid_bbox_stats.append(centroid["centroid_bbox_stats"])
         out = model(
             category_ids,
-            getattr(torch, "tensor")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z], dtype=getattr(torch, "float32")).unsqueeze(1),
-            getattr(torch, "tensor")(centroid_label_prob_16, dtype=getattr(torch, "float32")),
+            getattr(torch, "stack")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z]).to(dtype=getattr(torch, "float32")),
+            getattr(torch, "stack")(centroid_label_prob_16).to(dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_label_hist, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_row_projection, dtype=getattr(torch, "float32")),
             getattr(torch, "tensor")(centroid_col_projection, dtype=getattr(torch, "float32")),
