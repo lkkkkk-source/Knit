@@ -252,7 +252,7 @@ def _label_prob_summary_grids(label_prob_16: list[list[list[float]]], *, label_m
 
 
 def _save_tiled_grid(
-    tiles: list[list[list[tuple[int, int, int]]]],
+    tiles: list[object],
     labels: list[str],
     output_path: Path,
     *,
@@ -261,9 +261,27 @@ def _save_tiled_grid(
 ) -> None:
     try:
         from PIL import Image, ImageDraw
+        import numpy as np
     except Exception:
         save_json(output_path.with_suffix(output_path.suffix + ".json"), {"labels": labels, "tiles": tiles, "cols": cols, "cell_size": cell_size})
         return
+
+    def tile_to_rgb_array(tile: object) -> object:
+        array = np.asarray(tile)
+        if array.ndim == 2:
+            if np.issubdtype(array.dtype, np.floating):
+                gray = (np.clip(array.astype(np.float32), 0.0, 1.0) * 255.0).round().astype(np.uint8)
+                return np.repeat(gray[:, :, None], 3, axis=2)
+            palette = np.asarray(_official_palette(), dtype=np.uint8)
+            label_array = np.clip(array.astype(np.int64), 0, len(palette) - 1)
+            return palette[label_array]
+        if array.ndim == 3 and array.shape[2] == 3:
+            if np.issubdtype(array.dtype, np.floating):
+                max_value = float(np.nanmax(array)) if array.size else 1.0
+                array = array * 255.0 if max_value <= 1.0 else array
+            return np.clip(array, 0, 255).round().astype(np.uint8)
+        raise ValueError(f"Tile must be [H,W] or [H,W,3], got shape={array.shape!r}.")
+
     if not tiles:
         raise ValueError("No tiles to render.")
     cols = max(1, cols)
@@ -271,18 +289,18 @@ def _save_tiled_grid(
     text_height = max(18, cell_size)
     canvas = Image.new("RGB", (cols * 20 * cell_size, rows * (20 * cell_size + text_height)), BACKGROUND_RED)
     draw = ImageDraw.Draw(canvas)
+    print(f"saving {output_path}", flush=True)
     for index, tile in enumerate(tiles):
         x0 = (index % cols) * 20 * cell_size
         y0 = (index // cols) * (20 * cell_size + text_height)
-        for y_pos in range(20):
-            for x_pos in range(20):
-                color = tile[y_pos][x_pos]
-                for dy in range(cell_size):
-                    for dx in range(cell_size):
-                        canvas.putpixel((x0 + x_pos * cell_size + dx, y0 + text_height + y_pos * cell_size + dy), color)
+        tile_rgb = tile_to_rgb_array(tile)
+        tile_img = Image.fromarray(tile_rgb, mode="RGB")
+        tile_img = tile_img.resize((20 * cell_size, 20 * cell_size), resample=Image.Resampling.NEAREST)
+        canvas.paste(tile_img, (x0, y0 + text_height))
         draw.text((x0 + 2, y0 + 1), labels[index], fill=(255, 255, 255))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)
+    print(f"saved {output_path}", flush=True)
 
 
 def _descriptor_norm(descriptor: list[float]) -> float:
