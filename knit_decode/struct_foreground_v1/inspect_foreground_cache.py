@@ -6,7 +6,7 @@ import random
 from pathlib import Path
 from typing import cast
 
-from .utils import EXPECTED_DESCRIPTOR_DIM, IGNORE_INDEX, format_metric_line, foreground_area, label_diversity_on_fg, resolve_canonical_mode, save_json, save_jsonl
+from .utils import EXPECTED_DESCRIPTOR_DIM, IGNORE_INDEX, REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION, assert_no_forbidden_cache_fields, format_metric_line, foreground_area, label_diversity_on_fg, resolve_canonical_mode, save_json, save_jsonl
 
 
 REQUIRED_CACHE_KEYS = (
@@ -14,8 +14,6 @@ REQUIRED_CACHE_KEYS = (
     "centroid_sketch_by_category",
     "category_to_num_modes",
     "category_foreground_area_stats",
-    "descriptors_by_category",
-    "descriptor_slices",
 )
 
 FALLBACK_PALETTE = [
@@ -65,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _require_cache_fields(cache_payload: dict[str, object]) -> None:
+    meta = cache_payload.get("meta")
+    schema_version = meta.get("schema_version") if isinstance(meta, dict) else None
+    if schema_version != REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION:
+        raise ValueError(
+            f"Foreground cache has incompatible schema_version={schema_version!r}; "
+            f"expected {REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION!r}. "
+            "Please rebuild the foreground cache with the current build_foreground_cache.py."
+        )
+    assert_no_forbidden_cache_fields(cache_payload, context="Foreground cache")
     missing = [key for key in REQUIRED_CACHE_KEYS if key not in cache_payload]
     if missing:
         raise ValueError(f"Foreground cache is missing required fields: {', '.join(missing)}")

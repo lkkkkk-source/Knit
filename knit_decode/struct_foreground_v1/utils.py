@@ -8,7 +8,16 @@ from pathlib import Path
 IGNORE_INDEX = -100
 EXPECTED_DESCRIPTOR_DIM = 329
 VALID_CANONICAL_MODES = ("full_masked", "bbox_crop")
-REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION = "foreground_v1_full_masked_labelbalanced_transition_kmeans_v1"
+REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION = "foreground_v1_full_masked_labelbalanced_transition_kmeans_slim_v1"
+FORBIDDEN_FOREGROUND_CACHE_KEYS = frozenset(
+    {
+        "clustering_feature",
+        "label_spatial_feature",
+        "label_spatial_area_norm",
+        "label_spatial_channel_balanced",
+        "label_transition_feature",
+    }
+)
 REQUIRED_FOREGROUND_CACHE_KEYS = (
     "descriptors_by_category",
     "descriptor_mean_by_category",
@@ -87,6 +96,43 @@ def checkpoint_get(payload: dict[str, object], key: str, *, required: bool = Tru
     if required:
         raise ValueError(f"Checkpoint is missing required metadata field {key!r}.")
     return None
+
+
+def _format_cache_field_path(parts: list[str | int]) -> str:
+    text = ""
+    for part in parts:
+        if isinstance(part, int):
+            text += f"[{part}]"
+        else:
+            text = part if not text else f"{text}.{part}"
+    return text or "<root>"
+
+
+def assert_no_forbidden_cache_fields(
+    payload: object,
+    *,
+    forbidden_keys: frozenset[str] = FORBIDDEN_FOREGROUND_CACHE_KEYS,
+    context: str = "Foreground cache payload",
+) -> None:
+    def visit(value: object, path: list[str | int]) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = [*path, str(key)]
+                if isinstance(key, str) and key in forbidden_keys:
+                    raise RuntimeError(
+                        f"Forbidden large cache field found at {_format_cache_field_path(child_path)}"
+                    )
+                visit(child, child_path)
+        elif isinstance(value, (list, tuple)):
+            if value and not isinstance(value[0], (dict, list, tuple)):
+                return
+            for index, child in enumerate(value):
+                visit(child, [*path, index])
+
+    try:
+        visit(payload, [])
+    except RuntimeError as error:
+        raise RuntimeError(f"{context}: {error}") from error
 
 
 def infer_model_kwargs_from_checkpoint_payload(payload: dict[str, object], config: dict[str, object]) -> tuple[dict[str, int], dict[str, object]]:
@@ -189,6 +235,7 @@ def require_foreground_cache_fields(
             f"expected {REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION!r}. "
             "Please rebuild the foreground cache with the current build_foreground_cache.py."
         )
+    assert_no_forbidden_cache_fields(cache_payload, context=context)
     missing = [key for key in required_keys if key not in cache_payload]
     if missing:
         raise ValueError(

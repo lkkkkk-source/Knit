@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import cast
 
-from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, clustering_feature_from_parts, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
+from .utils import IGNORE_INDEX, REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION, assert_no_forbidden_cache_fields, bbox_vector, canonicalize_foreground, clustering_feature_from_parts, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
 
 
 def _require_sklearn() -> object:
@@ -76,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     items: list[dict[str, object]] = []
     descriptors_by_category: dict[str, list[list[float]]] = {}
     clustering_features_by_category: dict[str, list[list[float]]] = {}
+    clustering_feature_by_sample_id: dict[str, list[float]] = {}
     nondegenerate_by_category: dict[str, list[dict[str, object]]] = {}
     descriptor_slices: dict[str, object] | None = None
     from .utils import load_label_grid
@@ -126,23 +127,15 @@ def main(argv: list[str] | None = None) -> int:
             "canonical_mode": canonical_mode,
             "fg_area": fg_area,
             "bbox_stats": bbox_vector(canonical["bbox"], canonical_size=int(data_cf["canonical_size"])),
-            "label_spatial_feature": clustering_feature_payload["label_spatial_feature"],
-            "label_spatial_area_norm": clustering_feature_payload["label_spatial_area_norm"],
-            "label_spatial_channel_balanced": clustering_feature_payload["label_spatial_channel_balanced"],
-            "label_transition_feature": clustering_feature_payload["label_transition_feature"],
-            "clustering_feature": clustering_feature_payload["clustering_feature"],
-            "clustering_feature_slices": clustering_feature_payload["clustering_feature_slices"],
-            "clustering_feature_block_lengths": clustering_feature_payload["clustering_feature_block_lengths"],
-            "clustering_feature_weights": clustering_feature_payload["clustering_feature_weights"],
-            "clustering_feature_flags": clustering_feature_payload["clustering_feature_flags"],
-            "clustering_feature_final_norm": clustering_feature_payload["clustering_feature_final_norm"],
             **descriptor,
         }
+        clustering_feature = cast(list[float], clustering_feature_payload["clustering_feature"])
+        clustering_feature_by_sample_id[sample_id] = clustering_feature
         items.append(item)
         descriptor_slices = descriptor["descriptor_slices"]
         if not item["is_empty_foreground"]:
             descriptors_by_category.setdefault(item["category"], []).append(item["descriptor"])
-            clustering_features_by_category.setdefault(item["category"], []).append(item["clustering_feature"])
+            clustering_features_by_category.setdefault(item["category"], []).append(clustering_feature)
             nondegenerate_by_category.setdefault(item["category"], []).append(item)
         print_progress("fg-cache", index, total, f"empty={int(item['is_empty_foreground'])}")
     finish_progress()
@@ -212,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         global_tensor = torch.tensor(global_centers, dtype=torch.float32) if global_centers else None
         for item in items:
             category = item["category"]
-            descriptor = item["clustering_feature"]
+            descriptor = clustering_feature_by_sample_id[str(item["sample_id"])]
             if item["is_empty_foreground"]:
                 if category in category_kmeans_centers:
                     item["local_z"] = 0
@@ -296,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             "background_class_id": int(data_cf["background_class_id"]),
             "ignore_index": ignore_index,
             "canonical_mode": canonical_mode,
-            "schema_version": "foreground_v1_full_masked_labelbalanced_transition_kmeans_v1",
+            "schema_version": REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION,
             "split": "train" if is_train_like else ("val" if "val" in split_name else "test"),
             "source_kmeans_cache": str(args.kmeans_source_cache) if args.kmeans_source_cache is not None else None,
         },
@@ -313,9 +306,24 @@ def main(argv: list[str] | None = None) -> int:
         "descriptor_slices": descriptor_slices or {},
         "config": config,
     }
+    assert_no_forbidden_cache_fields(payload, context="Foreground cache payload")
     require_centroid_sketch_fields(payload, context="Foreground cache payload")
     torch.save(payload, output_path)
-    print(format_metric_line("saved foreground cache:", [("output", str(output_path)), ("items", len(items)), ("categories", len(category_kmeans_centers))]))
+    file_size_mb = output_path.stat().st_size / (1024.0 * 1024.0)
+    num_centroids = sum(len(centroids) for centroids in centroid_sketch_by_category.values())
+    print(
+        format_metric_line(
+            "saved foreground cache:",
+            [
+                ("output", str(output_path)),
+                ("file_size_mb", file_size_mb),
+                ("num_items", len(items)),
+                ("num_centroids", num_centroids),
+                ("schema_version", REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION),
+                ("stores_clustering_feature", False),
+            ],
+        )
+    )
     return 0
 
 
