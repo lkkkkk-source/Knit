@@ -8,7 +8,7 @@ from pathlib import Path
 IGNORE_INDEX = -100
 EXPECTED_DESCRIPTOR_DIM = 329
 VALID_CANONICAL_MODES = ("full_masked", "bbox_crop")
-REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION = "foreground_v1_full_masked_labelspatial_kmeans_v1"
+REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION = "foreground_v1_full_masked_labelbalanced_transition_kmeans_v1"
 REQUIRED_FOREGROUND_CACHE_KEYS = (
     "descriptors_by_category",
     "descriptor_mean_by_category",
@@ -842,6 +842,56 @@ def label_spatial_feature_flat(
     return feature
 
 
+def label_spatial_feature_channels(
+    fg_y20: list[list[int]],
+    *,
+    canonical_size: int = 20,
+    num_labels: int = 16,
+) -> list[list[list[float]]]:
+    channels = [[[0.0 for _ in range(canonical_size)] for _ in range(canonical_size)] for _ in range(num_labels)]
+    for y_pos in range(canonical_size):
+        for x_pos in range(canonical_size):
+            label_value = int(fg_y20[y_pos][x_pos])
+            if 1 <= label_value <= num_labels:
+                channels[label_value - 1][y_pos][x_pos] = 1.0
+    return channels
+
+
+def _flatten_channels(channels: list[list[list[float]]]) -> list[float]:
+    return [float(value) for channel in channels for row in channel for value in row]
+
+
+def _l2_normalize_feature_block(values: list[float], eps: float = 1e-12) -> list[float]:
+    norm = math.sqrt(sum(float(value) * float(value) for value in values))
+    if norm <= eps:
+        return [0.0 for _ in values]
+    return [float(value) / norm for value in values]
+
+
+def label_transition_edge_feature_flat(
+    fg_y20: list[list[int]],
+    *,
+    canonical_size: int = 20,
+    num_labels: int = 16,
+) -> list[float]:
+    channels = [[[0.0 for _ in range(canonical_size)] for _ in range(canonical_size)] for _ in range(num_labels)]
+    for y_pos in range(canonical_size):
+        for x_pos in range(canonical_size):
+            label_value = int(fg_y20[y_pos][x_pos])
+            if not (1 <= label_value <= num_labels):
+                continue
+            has_transition = False
+            for next_y, next_x in ((y_pos - 1, x_pos), (y_pos + 1, x_pos), (y_pos, x_pos - 1), (y_pos, x_pos + 1)):
+                if 0 <= next_y < canonical_size and 0 <= next_x < canonical_size:
+                    next_label = int(fg_y20[next_y][next_x])
+                    if 1 <= next_label <= num_labels and next_label != label_value:
+                        has_transition = True
+                        break
+            if has_transition:
+                channels[label_value - 1][y_pos][x_pos] = 1.0
+    return _flatten_channels(channels)
+
+
 def clustering_feature_from_parts(
     fg_y20: list[list[int]],
     fg_mask20: list[list[int]] | list[list[bool]],
@@ -851,32 +901,94 @@ def clustering_feature_from_parts(
     *,
     canonical_size: int = 20,
     num_labels: int = 16,
-    label_spatial_feature_weight: float = 1.0,
-    mask_feature_weight: float = 0.25,
-    bbox_feature_weight: float = 0.1,
+    label_spatial_feature_weight: float = 0.5,
+    label_spatial_area_norm_weight: float = 1.0,
+    label_spatial_channel_balanced_weight: float = 1.0,
+    label_transition_feature_weight: float = 0.75,
+    mask_feature_weight: float = 0.05,
+    row_col_feature_weight: float = 0.05,
+    bbox_feature_weight: float = 0.0,
+    eps: float = 1e-12,
 ) -> dict[str, object]:
-    label_spatial_feature = label_spatial_feature_flat(fg_y20, canonical_size=canonical_size, num_labels=num_labels)
-    mask_feature = [float(int(value) > 0) * mask_feature_weight for row in fg_mask20 for value in row]
-    row_projection_feature = [float(value) * mask_feature_weight for value in row_projection]
-    col_projection_feature = [float(value) * mask_feature_weight for value in col_projection]
-    bbox_feature = [float(value) * bbox_feature_weight for value in bbox_stats]
-    clustering_feature = (
-        [float(value) * label_spatial_feature_weight for value in label_spatial_feature]
-        + mask_feature
-        + row_projection_feature
-        + col_projection_feature
-        + bbox_feature
-    )
+    label_spatial_channels = label_spatial_feature_channels(fg_y20, canonical_size=canonical_size, num_labels=num_labels)
+    label_spatial_feature = _flatten_channels(label_spatial_channels)
+    fg_area = sum(float(value) for row in fg_mask20 for value in row)
+    fg_area_denom = math.sqrt(max(fg_area, 1.0))
+    label_spatial_area_norm = [float(value) / fg_area_denom for value in label_spatial_feature]
+    label_spatial_channel_balanced_channels: list[list[list[float]]] = []
+    for channel in label_spatial_channels:
+        channel_mass = sum(float(value) for row in channel for value in row)
+        denom = math.sqrt(channel_mass + eps)
+        label_spatial_channel_balanced_channels.append([[float(value) / denom for value in row] for row in channel])
+    label_spatial_channel_balanced = _flatten_channels(label_spatial_channel_balanced_channels)
+    label_transition_feature = label_transition_edge_feature_flat(fg_y20, canonical_size=canonical_size, num_labels=num_labels)
+    mask_feature = [float(int(value) > 0) for row in fg_mask20 for value in row]
+    row_feature = [float(value) for value in row_projection]
+    col_feature = [float(value) for value in col_projection]
+    row_col_feature = row_feature + col_feature
+    bbox_feature = [float(value) for value in bbox_stats]
+    block_payloads = {
+        "label_spatial_feature": (_l2_normalize_feature_block(label_spatial_feature, eps=eps), float(label_spatial_feature_weight)),
+        "label_spatial_area_norm": (_l2_normalize_feature_block(label_spatial_area_norm, eps=eps), float(label_spatial_area_norm_weight)),
+        "label_spatial_channel_balanced": (_l2_normalize_feature_block(label_spatial_channel_balanced, eps=eps), float(label_spatial_channel_balanced_weight)),
+        "label_transition_feature": (_l2_normalize_feature_block(label_transition_feature, eps=eps), float(label_transition_feature_weight)),
+        "mask_feature": (_l2_normalize_feature_block(mask_feature, eps=eps), float(mask_feature_weight)),
+        "row_col_feature": (_l2_normalize_feature_block(row_col_feature, eps=eps), float(row_col_feature_weight)),
+        "bbox_feature": (_l2_normalize_feature_block(bbox_feature, eps=eps), float(bbox_feature_weight)),
+    }
+    weighted_blocks: dict[str, list[float]] = {}
+    for name, (block, weight) in block_payloads.items():
+        weighted_blocks[name] = [float(value) * weight for value in block]
+    clustering_feature = []
+    clustering_feature_slices: dict[str, list[int]] = {}
+    offset = 0
+    for name in [
+        "label_spatial_feature",
+        "label_spatial_area_norm",
+        "label_spatial_channel_balanced",
+        "label_transition_feature",
+        "mask_feature",
+        "row_col_feature",
+        "bbox_feature",
+    ]:
+        block = weighted_blocks[name]
+        clustering_feature.extend(block)
+        clustering_feature_slices[name] = [offset, offset + len(block)]
+        offset += len(block)
+    clustering_feature = _l2_normalize_feature_block(clustering_feature, eps=eps)
+    final_norm = math.sqrt(sum(float(value) * float(value) for value in clustering_feature))
     return {
         "label_spatial_feature": label_spatial_feature,
+        "label_spatial_area_norm": label_spatial_area_norm,
+        "label_spatial_channel_balanced": label_spatial_channel_balanced,
+        "label_transition_feature": label_transition_feature,
         "clustering_feature": clustering_feature,
-        "clustering_feature_slices": {
-            "label_spatial_feature": [0, len(label_spatial_feature)],
-            "mask_feature": [len(label_spatial_feature), len(label_spatial_feature) + len(mask_feature)],
-            "row_projection_feature": [len(label_spatial_feature) + len(mask_feature), len(label_spatial_feature) + len(mask_feature) + len(row_projection_feature)],
-            "col_projection_feature": [len(label_spatial_feature) + len(mask_feature) + len(row_projection_feature), len(label_spatial_feature) + len(mask_feature) + len(row_projection_feature) + len(col_projection_feature)],
-            "bbox_feature": [len(clustering_feature) - len(bbox_feature), len(clustering_feature)],
+        "clustering_feature_slices": clustering_feature_slices,
+        "clustering_feature_block_lengths": {name: len(values) for name, values in {
+            "label_spatial_feature": label_spatial_feature,
+            "label_spatial_area_norm": label_spatial_area_norm,
+            "label_spatial_channel_balanced": label_spatial_channel_balanced,
+            "label_transition_feature": label_transition_feature,
+            "mask_feature": mask_feature,
+            "row_col_feature": row_col_feature,
+            "bbox_feature": bbox_feature,
+        }.items()},
+        "clustering_feature_weights": {
+            "label_spatial_feature_weight": float(label_spatial_feature_weight),
+            "label_spatial_area_norm_weight": float(label_spatial_area_norm_weight),
+            "label_spatial_channel_balanced_weight": float(label_spatial_channel_balanced_weight),
+            "label_transition_feature_weight": float(label_transition_feature_weight),
+            "mask_feature_weight": float(mask_feature_weight),
+            "row_col_feature_weight": float(row_col_feature_weight),
+            "bbox_feature_weight": float(bbox_feature_weight),
         },
+        "clustering_feature_flags": {
+            "area_norm": True,
+            "channel_balance": True,
+            "transition_feature": True,
+            "final_l2_normalize": True,
+        },
+        "clustering_feature_final_norm": final_norm,
     }
 
 

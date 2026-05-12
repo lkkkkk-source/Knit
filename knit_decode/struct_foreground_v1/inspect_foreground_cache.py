@@ -212,6 +212,7 @@ def _label_prob_summary_grids(label_prob_16: list[list[list[float]]], *, label_m
     entropy_values: list[float] = []
     confidence_values: list[float] = []
     dominant_ratio_hits = 0
+    label_diversity_values: list[float] = []
     active_count = 0
     for y_pos in range(20):
         for x_pos in range(20):
@@ -225,6 +226,7 @@ def _label_prob_summary_grids(label_prob_16: list[list[list[float]]], *, label_m
                 argmax_grid[y_pos][x_pos] = best_index + 1
                 active_count += 1
                 confidence_values.append(best_value)
+                label_diversity_values.append(float(sum(1 for value in values if value > 0.0)))
                 if best_value / max(mass_value, 1e-12) >= 0.5:
                     dominant_ratio_hits += 1
                 normalized = [value / mass_value for value in values if value > 0.0]
@@ -236,6 +238,7 @@ def _label_prob_summary_grids(label_prob_16: list[list[list[float]]], *, label_m
         "label_confidence_mean_on_mass": (sum(confidence_values) / float(len(confidence_values))) if confidence_values else 0.0,
         "label_entropy_mean_on_mass": (sum(entropy_values) / float(len(entropy_values))) if entropy_values else 0.0,
         "dominant_label_ratio_on_mass": float(dominant_ratio_hits) / float(max(1, active_count)),
+        "label_diversity_on_mass": (sum(label_diversity_values) / float(len(label_diversity_values))) if label_diversity_values else 0.0,
         "active_mass_pixel_count": float(active_count),
     }
     return mass_grid, argmax_grid, confidence_grid, quality
@@ -413,9 +416,11 @@ def main(argv: list[str] | None = None) -> int:
                     "centroid_fg_area": foreground_area(mask_grid),
                     "centroid_fg_area_prob_mean": sum(sum(float(value) for value in row) for row in prob_grid) / 400.0,
                     "centroid_fg_area_prob_max": max(max(float(value) for value in row) for row in prob_grid),
-                    "centroid_fg_area_bin_mean": foreground_area(mask_grid),
+                    "foreground_area_mean": foreground_area(mask_grid),
                     "label_mass_threshold": label_mass_threshold,
                     **label_quality,
+                    "possible_label_collapse": bool(label_quality["dominant_label_ratio_on_mass"] > 0.8),
+                    "low_label_diversity_centroid": bool(label_quality["label_diversity_on_mass"] <= 2.0),
                     "centroid_fg_mask_threshold": float(entry.get("centroid_fg_mask_threshold", 0.5)),
                     "fallback_used": bool(entry.get("fallback_used", False)),
                     "num_samples": int(entry.get("num_samples", 0)),
@@ -434,14 +439,17 @@ def main(argv: list[str] | None = None) -> int:
                     "centroid_fg_area": foreground_area(mask_grid),
                     "centroid_fg_area_prob_mean": 0.0,
                     "centroid_fg_area_prob_max": 0.0,
-                    "centroid_fg_area_bin_mean": foreground_area(mask_grid),
+                    "foreground_area_mean": foreground_area(mask_grid),
                     "label_mass_threshold": label_mass_threshold,
                     "label_mass_mean": 0.0,
                     "label_mass_max": 0.0,
                     "label_confidence_mean_on_mass": 0.0,
                     "label_entropy_mean_on_mass": 0.0,
                     "dominant_label_ratio_on_mass": 0.0,
+                    "label_diversity_on_mass": 0.0,
                     "active_mass_pixel_count": 0.0,
+                    "possible_label_collapse": False,
+                    "low_label_diversity_centroid": False,
                     "centroid_fg_mask_threshold": 0.0,
                     "fallback_used": False,
                     "num_samples": 0,

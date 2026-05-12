@@ -15,10 +15,14 @@ planner:
   hidden_dim: 384
 
 clustering:
-  label_spatial_feature_weight: 1.0
-  mask_feature_weight: 0.25
-  bbox_feature_weight: 0.1
-  label_mass_threshold: 0.05
+  label_spatial_feature_weight: 0.5
+  label_spatial_area_norm_weight: 1.0
+  label_spatial_channel_balanced_weight: 1.0
+  label_transition_feature_weight: 0.75
+  mask_feature_weight: 0.05
+  row_col_feature_weight: 0.05
+  bbox_feature_weight: 0.0
+  label_mass_threshold: 0.1
 
 train:
   output_dir: knit_decode/struct_foreground_v1/runs/foreground_planner_v1
