@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--cols", type=int, default=8)
     parser.add_argument("--cell-size", type=int, default=18)
+    parser.add_argument("--label-mass-threshold", type=float, default=None)
     return parser
 
 
@@ -204,18 +205,40 @@ def _prob_grid_to_rgb(grid: list[list[float]], *, missing_mask: bool = False) ->
     return rgb
 
 
-def _label_prob_summary_grids(label_prob_16: list[list[list[float]]]) -> tuple[list[list[float]], list[list[int]], list[list[float]]]:
+def _label_prob_summary_grids(label_prob_16: list[list[list[float]]], *, label_mass_threshold: float) -> tuple[list[list[float]], list[list[int]], list[list[float]], dict[str, float]]:
     mass_grid = [[0.0 for _ in range(20)] for _ in range(20)]
-    argmax_grid = [[1 for _ in range(20)] for _ in range(20)]
+    argmax_grid = [[0 for _ in range(20)] for _ in range(20)]
     confidence_grid = [[0.0 for _ in range(20)] for _ in range(20)]
+    entropy_values: list[float] = []
+    confidence_values: list[float] = []
+    dominant_ratio_hits = 0
+    active_count = 0
     for y_pos in range(20):
         for x_pos in range(20):
             values = [float(label_prob_16[channel][y_pos][x_pos]) for channel in range(16)]
-            mass_grid[y_pos][x_pos] = sum(values)
+            mass_value = sum(values)
+            mass_grid[y_pos][x_pos] = mass_value
             best_index = max(range(16), key=lambda index: values[index])
-            argmax_grid[y_pos][x_pos] = best_index + 1
-            confidence_grid[y_pos][x_pos] = round(values[best_index], 3)
-    return mass_grid, argmax_grid, confidence_grid
+            best_value = values[best_index]
+            confidence_grid[y_pos][x_pos] = round(best_value, 3)
+            if mass_value > label_mass_threshold:
+                argmax_grid[y_pos][x_pos] = best_index + 1
+                active_count += 1
+                confidence_values.append(best_value)
+                if best_value / max(mass_value, 1e-12) >= 0.5:
+                    dominant_ratio_hits += 1
+                normalized = [value / mass_value for value in values if value > 0.0]
+                entropy = -sum(prob * math.log(prob + 1e-12) for prob in normalized)
+                entropy_values.append(entropy)
+    quality = {
+        "label_mass_mean": sum(sum(row) for row in mass_grid) / 400.0,
+        "label_mass_max": max(max(row) for row in mass_grid),
+        "label_confidence_mean_on_mass": (sum(confidence_values) / float(len(confidence_values))) if confidence_values else 0.0,
+        "label_entropy_mean_on_mass": (sum(entropy_values) / float(len(entropy_values))) if entropy_values else 0.0,
+        "dominant_label_ratio_on_mass": float(dominant_ratio_hits) / float(max(1, active_count)),
+        "active_mass_pixel_count": float(active_count),
+    }
+    return mass_grid, argmax_grid, confidence_grid, quality
 
 
 def _save_tiled_grid(
@@ -281,7 +304,9 @@ def main(argv: list[str] | None = None) -> int:
     _require_cache_fields(payload)
     config = payload.get("config", {})
     data_cf = config.get("data", {})
+    clustering_cf = config.get("clustering", {}) if isinstance(config.get("clustering", {}), dict) else {}
     canonical_mode = resolve_canonical_mode(data_cf)
+    label_mass_threshold = float(args.label_mass_threshold if args.label_mass_threshold is not None else clustering_cf.get("label_mass_threshold", 0.05))
     if args.category not in payload["category_to_num_modes"]:
         raise ValueError(f"Category {args.category!r} not found in category_to_num_modes.")
     rng = random.Random(int(args.seed))
@@ -363,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         if mask_grid is None:
             mask_grid = [[0 for _ in range(20)] for _ in range(20)]
         label_prob_16 = _centroid_label_prob_grid(entry, context=f"centroid[{args.category}][{local_z}]")
-        label_mass_grid, label_argmax_grid, label_confidence_grid = _label_prob_summary_grids(label_prob_16)
+        label_mass_grid, label_argmax_grid, label_confidence_grid, label_quality = _label_prob_summary_grids(label_prob_16, label_mass_threshold=label_mass_threshold)
         centroid_prob_tiles.append(_prob_grid_to_rgb(prob_grid, missing_mask=missing_prob))
         centroid_bin_tiles.append(_grid_to_rgb(mask_grid, mode="mask", missing_mask=missing_mask))
         centroid_label_mass_tiles.append(_prob_grid_to_rgb(label_mass_grid, missing_mask=missing_prob))
@@ -389,8 +414,8 @@ def main(argv: list[str] | None = None) -> int:
                     "centroid_fg_area_prob_mean": sum(sum(float(value) for value in row) for row in prob_grid) / 400.0,
                     "centroid_fg_area_prob_max": max(max(float(value) for value in row) for row in prob_grid),
                     "centroid_fg_area_bin_mean": foreground_area(mask_grid),
-                    "centroid_label_mass_mean": sum(sum(float(value) for value in row) for row in label_mass_grid) / 400.0,
-                    "centroid_label_confidence_mean": sum(sum(float(value) for value in row) for row in label_confidence_grid) / 400.0,
+                    "label_mass_threshold": label_mass_threshold,
+                    **label_quality,
                     "centroid_fg_mask_threshold": float(entry.get("centroid_fg_mask_threshold", 0.5)),
                     "fallback_used": bool(entry.get("fallback_used", False)),
                     "num_samples": int(entry.get("num_samples", 0)),
@@ -410,8 +435,13 @@ def main(argv: list[str] | None = None) -> int:
                     "centroid_fg_area_prob_mean": 0.0,
                     "centroid_fg_area_prob_max": 0.0,
                     "centroid_fg_area_bin_mean": foreground_area(mask_grid),
-                    "centroid_label_mass_mean": 0.0,
-                    "centroid_label_confidence_mean": 0.0,
+                    "label_mass_threshold": label_mass_threshold,
+                    "label_mass_mean": 0.0,
+                    "label_mass_max": 0.0,
+                    "label_confidence_mean_on_mass": 0.0,
+                    "label_entropy_mean_on_mass": 0.0,
+                    "dominant_label_ratio_on_mass": 0.0,
+                    "active_mass_pixel_count": 0.0,
                     "centroid_fg_mask_threshold": 0.0,
                     "fallback_used": False,
                     "num_samples": 0,
@@ -443,7 +473,7 @@ def main(argv: list[str] | None = None) -> int:
         "category_foreground_area_stats": payload["category_foreground_area_stats"].get(args.category),
     }
     save_json(output_dir / f"{args.category}_sample_stats.json", sample_stats)
-    save_json(output_dir / f"{args.category}_centroid_stats.json", {"note": "centroid_label_argmax_grid is meaningful mainly where centroid_label_mass_grid / centroid_fg_mask_prob is high.", "rows": centroid_rows})
+    save_json(output_dir / f"{args.category}_centroid_stats.json", {"note": "centroid_label_argmax_grid is meaningful mainly where centroid_label_mass_grid / centroid_fg_mask_prob is high.", "label_mass_threshold": label_mass_threshold, "rows": centroid_rows})
     save_jsonl(output_dir / f"{args.category}_samples.jsonl", sample_rows)
     print(
         format_metric_line(

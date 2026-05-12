@@ -4,8 +4,9 @@ import argparse
 import json
 import math
 from pathlib import Path
+from typing import cast
 
-from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
+from .utils import IGNORE_INDEX, bbox_vector, canonicalize_foreground, clustering_feature_from_parts, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
 
 
 def _require_sklearn() -> object:
@@ -61,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     data_cf = config["data"]
     planner_cf = config["planner"]
+    clustering_cf = cast(dict[str, object], config.get("clustering", {})) if isinstance(config.get("clustering", {}), dict) else {}
     canonical_mode = resolve_canonical_mode(data_cf)
     ignore_index = require_ignore_index(data_cf)
     manifest_path = Path(args.manifest or data_cf["train_manifest"])
@@ -73,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     total = len(rows)
     items: list[dict[str, object]] = []
     descriptors_by_category: dict[str, list[list[float]]] = {}
+    clustering_features_by_category: dict[str, list[list[float]]] = {}
     nondegenerate_by_category: dict[str, list[dict[str, object]]] = {}
     descriptor_slices: dict[str, object] | None = None
     from .utils import load_label_grid
@@ -94,6 +97,17 @@ def main(argv: list[str] | None = None) -> int:
         validate_foreground_labels(canonical["fg_y20"], canonical["fg_mask20"], canonical_size=int(data_cf["canonical_size"]), context=f"cache[{sample_id}]")
         ensure_descriptor_dim(descriptor["descriptor"], context=f"cache[{sample_id}]")
         fg_area = foreground_area(canonical["fg_mask20"])
+        clustering_feature_payload = clustering_feature_from_parts(
+            canonical["fg_y20"],
+            canonical["fg_mask20"],
+            bbox_vector(canonical["bbox"], canonical_size=int(data_cf["canonical_size"])),
+            descriptor["row_projection"],
+            descriptor["col_projection"],
+            canonical_size=int(data_cf["canonical_size"]),
+            label_spatial_feature_weight=float(clustering_cf.get("label_spatial_feature_weight", 1.0)),
+            mask_feature_weight=float(clustering_cf.get("mask_feature_weight", 0.25)),
+            bbox_feature_weight=float(clustering_cf.get("bbox_feature_weight", 0.1)),
+        )
         item = {
             "sample_id": row["sample_id"],
             "category": row["category"],
@@ -108,12 +122,16 @@ def main(argv: list[str] | None = None) -> int:
             "canonical_mode": canonical_mode,
             "fg_area": fg_area,
             "bbox_stats": bbox_vector(canonical["bbox"], canonical_size=int(data_cf["canonical_size"])),
+            "label_spatial_feature": clustering_feature_payload["label_spatial_feature"],
+            "clustering_feature": clustering_feature_payload["clustering_feature"],
+            "clustering_feature_slices": clustering_feature_payload["clustering_feature_slices"],
             **descriptor,
         }
         items.append(item)
         descriptor_slices = descriptor["descriptor_slices"]
         if not item["is_empty_foreground"]:
             descriptors_by_category.setdefault(item["category"], []).append(item["descriptor"])
+            clustering_features_by_category.setdefault(item["category"], []).append(item["clustering_feature"])
             nondegenerate_by_category.setdefault(item["category"], []).append(item)
         print_progress("fg-cache", index, total, f"empty={int(item['is_empty_foreground'])}")
     finish_progress()
@@ -149,10 +167,11 @@ def main(argv: list[str] | None = None) -> int:
         descriptor_global_mean, descriptor_global_std = descriptor_global_stats(items)
         for category, descs in descriptors_by_category.items():
             samples_c = nondegenerate_by_category[category]
+            clustering_descs = clustering_features_by_category[category]
             k_c = min(num_modes_per_category, max(2, math.floor(len(samples_c) / max(1, min_samples_per_mode))))
             k_c = min(k_c, max(1, len(samples_c)))
             kmeans = cluster_cls(n_clusters=k_c, batch_size=1024, random_state=42, n_init="auto")
-            assigned = kmeans.fit_predict(descs).tolist()
+            assigned = kmeans.fit_predict(clustering_descs).tolist()
             category_kmeans_centers[category] = [list(map(float, row)) for row in kmeans.cluster_centers_.tolist()]
             category_to_num_modes[category] = k_c
             for sample, z in zip(samples_c, assigned):
@@ -182,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         global_tensor = torch.tensor(global_centers, dtype=torch.float32) if global_centers else None
         for item in items:
             category = item["category"]
-            descriptor = item["descriptor"]
+            descriptor = item["clustering_feature"]
             if item["is_empty_foreground"]:
                 if category in category_kmeans_centers:
                     item["local_z"] = 0
@@ -266,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
             "background_class_id": int(data_cf["background_class_id"]),
             "ignore_index": ignore_index,
             "canonical_mode": canonical_mode,
-            "schema_version": "foreground_v1_full_masked_centroid_label_prob_16_v2",
+            "schema_version": "foreground_v1_full_masked_labelspatial_kmeans_v1",
             "split": "train" if is_train_like else ("val" if "val" in split_name else "test"),
             "source_kmeans_cache": str(args.kmeans_source_cache) if args.kmeans_source_cache is not None else None,
         },

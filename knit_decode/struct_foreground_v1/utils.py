@@ -8,6 +8,7 @@ from pathlib import Path
 IGNORE_INDEX = -100
 EXPECTED_DESCRIPTOR_DIM = 329
 VALID_CANONICAL_MODES = ("full_masked", "bbox_crop")
+REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION = "foreground_v1_full_masked_labelspatial_kmeans_v1"
 REQUIRED_FOREGROUND_CACHE_KEYS = (
     "descriptors_by_category",
     "descriptor_mean_by_category",
@@ -180,6 +181,14 @@ def require_foreground_cache_fields(
     required_keys: tuple[str, ...] = REQUIRED_FOREGROUND_CACHE_KEYS,
     context: str = "Foreground cache",
 ) -> None:
+    meta = cache_payload.get("meta")
+    schema_version = meta.get("schema_version") if isinstance(meta, dict) else None
+    if schema_version != REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION:
+        raise ValueError(
+            f"{context} has incompatible schema_version={schema_version!r}; "
+            f"expected {REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION!r}. "
+            "Please rebuild the foreground cache with the current build_foreground_cache.py."
+        )
     missing = [key for key in required_keys if key not in cache_payload]
     if missing:
         raise ValueError(
@@ -815,6 +824,59 @@ def mask_component_stats(mask: list[list[int]] | list[list[bool]]) -> dict[str, 
         "num_components": float(len(component_sizes)),
         "largest_component_ratio": float(largest) / float(max(1, total_fg)),
         "tiny_component_count": float(tiny_count),
+    }
+
+
+def label_spatial_feature_flat(
+    fg_y20: list[list[int]],
+    *,
+    canonical_size: int = 20,
+    num_labels: int = 16,
+) -> list[float]:
+    feature = [0.0 for _ in range(num_labels * canonical_size * canonical_size)]
+    for y_pos in range(canonical_size):
+        for x_pos in range(canonical_size):
+            label_value = int(fg_y20[y_pos][x_pos])
+            if 1 <= label_value <= num_labels:
+                feature[((label_value - 1) * canonical_size * canonical_size) + (y_pos * canonical_size) + x_pos] = 1.0
+    return feature
+
+
+def clustering_feature_from_parts(
+    fg_y20: list[list[int]],
+    fg_mask20: list[list[int]] | list[list[bool]],
+    bbox_stats: list[float],
+    row_projection: list[float],
+    col_projection: list[float],
+    *,
+    canonical_size: int = 20,
+    num_labels: int = 16,
+    label_spatial_feature_weight: float = 1.0,
+    mask_feature_weight: float = 0.25,
+    bbox_feature_weight: float = 0.1,
+) -> dict[str, object]:
+    label_spatial_feature = label_spatial_feature_flat(fg_y20, canonical_size=canonical_size, num_labels=num_labels)
+    mask_feature = [float(int(value) > 0) * mask_feature_weight for row in fg_mask20 for value in row]
+    row_projection_feature = [float(value) * mask_feature_weight for value in row_projection]
+    col_projection_feature = [float(value) * mask_feature_weight for value in col_projection]
+    bbox_feature = [float(value) * bbox_feature_weight for value in bbox_stats]
+    clustering_feature = (
+        [float(value) * label_spatial_feature_weight for value in label_spatial_feature]
+        + mask_feature
+        + row_projection_feature
+        + col_projection_feature
+        + bbox_feature
+    )
+    return {
+        "label_spatial_feature": label_spatial_feature,
+        "clustering_feature": clustering_feature,
+        "clustering_feature_slices": {
+            "label_spatial_feature": [0, len(label_spatial_feature)],
+            "mask_feature": [len(label_spatial_feature), len(label_spatial_feature) + len(mask_feature)],
+            "row_projection_feature": [len(label_spatial_feature) + len(mask_feature), len(label_spatial_feature) + len(mask_feature) + len(row_projection_feature)],
+            "col_projection_feature": [len(label_spatial_feature) + len(mask_feature) + len(row_projection_feature), len(label_spatial_feature) + len(mask_feature) + len(row_projection_feature) + len(col_projection_feature)],
+            "bbox_feature": [len(clustering_feature) - len(bbox_feature), len(clustering_feature)],
+        },
     }
 
 
