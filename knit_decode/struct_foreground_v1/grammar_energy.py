@@ -46,6 +46,14 @@ def _cfg(config: dict[str, Any] | None, key: str) -> Any:
     return merged[key]
 
 
+def _merged_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    merged.update(DEFAULT_GRAMMAR_BANK_CONFIG)
+    if isinstance(config, dict):
+        merged.update(config)
+    return merged
+
+
 def _as_list(value: Any) -> Any:
     if hasattr(value, "detach"):
         value = value.detach().cpu()
@@ -376,7 +384,7 @@ def build_grammar_bank(items: list[dict[str, Any]], config: dict[str, Any] | Non
     return {
         "schema_version": GRAMMAR_BANK_SCHEMA_VERSION,
         "enabled": True,
-        "config": dict(DEFAULT_GRAMMAR_BANK_CONFIG, **(config or {})),
+        "config": _merged_config(config),
         "categories": categories,
     }
 
@@ -443,8 +451,18 @@ def _hinge_quantile(value: float, quantiles: dict[str, float] | None, *, low_key
 class GrammarEnergy:
     def __init__(self, grammar_bank: dict[str, Any], weights: dict[str, float] | None = None, config: dict[str, Any] | None = None):
         self.grammar_bank = grammar_bank
-        self.config = dict(DEFAULT_GRAMMAR_BANK_CONFIG, **(grammar_bank.get("config", {}) if isinstance(grammar_bank.get("config"), dict) else {}), **(config or {}))
-        self.weights = dict(DEFAULT_RERANK_WEIGHTS, **(weights or {}))
+        merged_config = _merged_config(None)
+        bank_config = grammar_bank.get("config", {})
+        if isinstance(bank_config, dict):
+            merged_config.update(bank_config)
+        if isinstance(config, dict):
+            merged_config.update(config)
+        self.config = merged_config
+        merged_weights: dict[str, float] = {}
+        merged_weights.update(DEFAULT_RERANK_WEIGHTS)
+        if isinstance(weights, dict):
+            merged_weights.update(weights)
+        self.weights = merged_weights
         self.invalid_penalty = float(self.config.get("invalid_penalty", 999.0))
 
     def _stats(self, category: str, mode_z: int | None = None) -> dict[str, Any]:

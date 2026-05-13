@@ -265,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
         save_label_map(row["fg_label"], sample_dir / "fg_label20.png", scale=12)
         save_label_map(composed, sample_dir / "composed_y20.png", scale=12)
         payload_row = {
+            "index": int(row["index"]),
+            "rank": int(out_index),
             "category": args.category,
             "local_z": row["local_z"],
             "bbox_pred": row["bbox_pred"],
@@ -302,7 +304,11 @@ def main(argv: list[str] | None = None) -> int:
                 "composed_y20": row["composed_y20"],
             })
     finish_progress()
-    ranking = sorted(range(len(rows)), key=lambda i: float((rows[i].get("grammar_energy") or {}).get("total", 0.0))) if rerank_enabled else [int(row["index"]) for row in outputs]
+    ranking = (
+        [int(rows[i]["index"]) for i in sorted(range(len(rows)), key=lambda i: float((rows[i].get("grammar_energy") or {}).get("total", 0.0)))]
+        if rerank_enabled
+        else [int(row.get("index", i)) for i, row in enumerate(outputs)]
+    )
     summary = {
         "category": args.category,
         "num_candidates": len(outputs),
@@ -348,7 +354,8 @@ def main(argv: list[str] | None = None) -> int:
     print(format_metric_line("sample-foreground:", [("category", args.category), ("num_candidates", len(outputs)), ("valid_plans", len(valid_rows)), ("rerank", rerank_enabled)]))
     if rerank_enabled:
         raw_valid = [row for row in rows if row["is_valid_foreground"]]
-        top_rows = [rows[i] for i in ranking[: int(args.top_k or rerank_cf.get("top_k", num_valid))]]
+        rows_by_index = {int(row["index"]): row for row in rows}
+        top_rows = [rows_by_index[i] for i in ranking[: int(args.top_k or rerank_cf.get("top_k", num_valid))] if i in rows_by_index]
         print(format_metric_line("grammar-rerank:", [
             ("best_total_energy", float(rows[ranking[0]]["grammar_energy"]["total"]) if ranking else 0.0),
             ("raw_valid_count", len(raw_valid)),
