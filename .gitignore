@@ -24,3 +24,4 @@ __pycache__/
 *.pt
 knit_decode/struct_latentplan_v1/cache/
 knit_decode/struct_foreground_v1/runs/
+output/
