@@ -1,0 +1,12 @@
+{
+  "output_dir": "output\\struct_foreground_v1\\pro_matrix_packet\\synthetic_smoke",
+  "categories": [
+    "CableLike",
+    "MeshLike"
+  ],
+  "samples_per_category": 6,
+  "total_samples_exported": 4,
+  "skipped_samples": [],
+  "all_categories_pro_packet": "output\\struct_foreground_v1\\pro_matrix_packet\\synthetic_smoke\\all_categories_pro_packet.md",
+  "compact_for_gpt": "output\\struct_foreground_v1\\pro_matrix_packet\\synthetic_smoke\\compact_for_gpt\\all_categories_compact_packet.md"
+}

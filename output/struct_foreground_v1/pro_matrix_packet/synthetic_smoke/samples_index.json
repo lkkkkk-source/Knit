@@ -1,0 +1,30 @@
+[
+  {
+    "sample_id": "CableLike_00",
+    "category": "CableLike",
+    "local_z": 0,
+    "source_path": "synthetic://CableLike_00",
+    "onehot_npz_path": null
+  },
+  {
+    "sample_id": "CableLike_01",
+    "category": "CableLike",
+    "local_z": 1,
+    "source_path": "synthetic://CableLike_01",
+    "onehot_npz_path": null
+  },
+  {
+    "sample_id": "MeshLike_00",
+    "category": "MeshLike",
+    "local_z": 0,
+    "source_path": "synthetic://MeshLike_00",
+    "onehot_npz_path": null
+  },
+  {
+    "sample_id": "MeshLike_01",
+    "category": "MeshLike",
+    "local_z": 1,
+    "source_path": "synthetic://MeshLike_01",
+    "onehot_npz_path": null
+  }
+]
