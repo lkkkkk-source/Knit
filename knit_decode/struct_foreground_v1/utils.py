@@ -8,7 +8,7 @@ from pathlib import Path
 IGNORE_INDEX = -100
 EXPECTED_DESCRIPTOR_DIM = 329
 VALID_CANONICAL_MODES = ("full_masked", "bbox_crop")
-REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION = "foreground_v1_full_masked_labelbalanced_transition_kmeans_slim_v1"
+REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION = "foreground_v1_full_masked_labelbalanced_transition_kmeans_grammar_bank_v1"
 FORBIDDEN_FOREGROUND_CACHE_KEYS = frozenset(
     {
         "clustering_feature",

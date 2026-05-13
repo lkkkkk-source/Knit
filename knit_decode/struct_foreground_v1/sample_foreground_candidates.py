@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from .compose_foreground import compose_foreground
+from .grammar_energy import GrammarEnergy, compute_candidate_descriptors
 from .inspect_foreground_planner import _require_torch
-from .utils import bbox_from_mask, build_planner_from_checkpoint_payload, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_map
+from .utils import bbox_from_mask, build_planner_from_checkpoint_payload, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,6 +17,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--category", type=str, required=True)
     parser.add_argument("--num-candidates", type=int, default=32)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--use-grammar-rerank", action="store_true")
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--save-raw-candidates", action="store_true")
+    parser.add_argument("--energy-config", type=Path, default=None)
     return parser
 
 
@@ -35,6 +41,38 @@ def _descriptor_margin(descriptor: list[float], category: str, cache_payload: di
         nearest_other = min(nearest_other, value)
     margin = own_dist - nearest_other if nearest_other < float("inf") else own_dist
     return own_dist, nearest_other, margin
+
+
+def _mean(rows: list[dict[str, object]], key: str) -> float:
+    if not rows:
+        return 0.0
+    return sum(float(row.get(key, 0.0)) for row in rows) / float(len(rows))
+
+
+def _mean_energy(rows: list[dict[str, object]], key: str) -> float:
+    vals = []
+    for row in rows:
+        energy = row.get("grammar_energy")
+        if isinstance(energy, dict):
+            vals.append(float(energy.get(key, 0.0)))
+    return sum(vals) / float(max(1, len(vals)))
+
+
+def _load_energy_override(path: Path | None) -> dict[str, object]:
+    if path is None:
+        return {}
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        payload = json.loads(text)
+    else:
+        try:
+            import yaml
+        except ImportError as error:
+            raise ImportError("PyYAML is required for non-JSON --energy-config files.") from error
+        payload = yaml.safe_load(text)
+    if not isinstance(payload, dict):
+        raise ValueError(f"--energy-config must contain a mapping, got {type(payload)}")
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,6 +114,15 @@ def main(argv: list[str] | None = None) -> int:
     require_centroid_sketch_fields(cache_payload, context="Foreground train cache")
     if args.category not in cache_payload["category_foreground_area_stats"]:
         raise ValueError(f"Foreground train cache is missing category_foreground_area_stats for category {args.category!r}.")
+    grammar_bank = cache_payload.get("grammar_bank")
+    rerank_cf = config.get("grammar_rerank", {}) if isinstance(config.get("grammar_rerank", {}), dict) else {}
+    energy_override = _load_energy_override(args.energy_config)
+    if energy_override:
+        rerank_cf = {**rerank_cf, **energy_override}
+    rerank_enabled = bool(args.use_grammar_rerank or rerank_cf.get("enabled", False))
+    if rerank_enabled and not isinstance(grammar_bank, dict):
+        raise ValueError("Grammar rerank requested but cache does not contain grammar_bank. Rebuild the cache first.")
+    grammar_energy = GrammarEnergy(grammar_bank, weights=rerank_cf.get("weights", {}), config={**config.get("grammar_bank", {}), **rerank_cf}) if rerank_enabled else None
     category_to_num_modes = checkpoint_get(payload, "category_to_num_modes")
     if args.category not in category_to_num_modes:
         raise ValueError(
@@ -167,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
             component_stats = mask_component_stats(fg_mask)
             desc = foreground_descriptor(fg_label, fg_mask, bbox_from_mask([[bool(value) for value in row] for row in fg_mask]))
             own_distance, nearest_other_distance, margin = _descriptor_margin(desc["descriptor"], args.category, cache_payload)
+            composed_y20 = compose_foreground(fg_mask, fg_label, out["bbox_pred"][index].detach().cpu().tolist(), output_dir=None, canonical_mode=canonical_mode)["composed_y20"]
+            grammar_desc = compute_candidate_descriptors(composed_y20, config.get("grammar_bank", {}) if isinstance(config.get("grammar_bank", {}), dict) else {})
+            energy = grammar_energy.score(composed_y20, args.category, mode_z=int(out["local_z"][index].item())) if grammar_energy is not None else None
             rows.append({
                 "index": index,
                 "local_z": int(out["local_z"][index].item()),
@@ -183,19 +233,34 @@ def main(argv: list[str] | None = None) -> int:
                 "own_category_distance": own_distance,
                 "nearest_other_category_distance": nearest_other_distance,
                 "category_descriptor_margin": margin,
+                "composed_y20": composed_y20,
+                "grammar_diagnostics": {
+                    "foreground_area_ratio": float(grammar_desc["foreground_area_ratio"]),
+                    "label_diversity": int(grammar_desc["label_diversity"]),
+                    "dominant_label_ratio": float(grammar_desc["dominant_label_ratio"]),
+                    "num_components": int(grammar_desc["num_connected_components"]),
+                    "largest_component_ratio": float(grammar_desc["largest_component_ratio"]),
+                    "tiny_island_count": int(grammar_desc["tiny_island_count"]),
+                },
+                "grammar_energy": energy,
             })
         valid_rows = [row for row in rows if row["is_valid_foreground"]]
-        selected = valid_rows[:num_valid]
         fallback_used = False
-        if len(selected) < int(args.num_candidates):
-            fallback_used = True
-            selected.extend([row for row in rows if not row["is_valid_foreground"]][: int(args.num_candidates) - len(selected)])
-        selected = selected[: int(args.num_candidates)]
+        if rerank_enabled:
+            ranked = sorted(rows, key=lambda row: float((row.get("grammar_energy") or {}).get("total", 0.0)))
+            selected = ranked[: int(args.top_k or rerank_cf.get("top_k", num_valid))]
+        else:
+            selected = valid_rows[:num_valid]
+            if len(selected) < int(args.num_candidates):
+                fallback_used = True
+                selected.extend([row for row in rows if not row["is_valid_foreground"]][: int(args.num_candidates) - len(selected)])
+            selected = selected[: int(args.num_candidates)]
     outputs = []
+    raw_candidates = []
     for out_index, row in enumerate(selected):
         sample_dir = output_dir / f"candidate_{out_index:03d}"
         sample_dir.mkdir(parents=True, exist_ok=True)
-        composed = compose_foreground(row["fg_mask"], row["fg_label"], row["bbox_pred"], sample_dir, canonical_mode=canonical_mode)["composed_y20"]
+        composed = row["composed_y20"]
         save_binary_map(row["fg_mask"], sample_dir / "fg_mask20.png", scale=12)
         save_label_map(row["fg_label"], sample_dir / "fg_label20.png", scale=12)
         save_label_map(composed, sample_dir / "composed_y20.png", scale=12)
@@ -213,16 +278,90 @@ def main(argv: list[str] | None = None) -> int:
             "own_category_distance": row["own_category_distance"],
             "nearest_other_category_distance": row["nearest_other_category_distance"],
             "category_descriptor_margin": row["category_descriptor_margin"],
+            "grammar_diagnostics": row["grammar_diagnostics"],
             "composed_y20": composed,
             "sample_dir": str(sample_dir),
+            "grammar_energy": row.get("grammar_energy"),
         }
         save_json(sample_dir / "meta.json", payload_row)
         outputs.append(payload_row)
         print_progress("sample-fg", out_index + 1, len(selected), f"z={row['local_z']} area={row['fg_area']:.4f}")
+    if args.save_raw_candidates:
+        raw_candidates = []
+        for row in rows:
+            raw_candidates.append({
+                "index": row["index"],
+                "local_z": row["local_z"],
+                "is_valid_foreground": row["is_valid_foreground"],
+                "invalid_reasons": row["invalid_reasons"],
+                "fg_area": row["fg_area"],
+                "label_diversity": row["label_diversity"],
+                "largest_component_ratio": row["largest_component_ratio"],
+                "tiny_component_count": row["tiny_component_count"],
+                "grammar_energy": row.get("grammar_energy"),
+                "composed_y20": row["composed_y20"],
+            })
     finish_progress()
-    save_json(output_dir / "candidates.json", {"category": args.category, "num_candidates": len(outputs), "planner_oversample": oversample, "num_valid_plans": len(valid_rows), "fallback_used": fallback_used, "warning": ("valid candidates fewer than requested; included invalid fallback samples" if fallback_used else ""), "samples": outputs})
+    ranking = sorted(range(len(rows)), key=lambda i: float((rows[i].get("grammar_energy") or {}).get("total", 0.0))) if rerank_enabled else [int(row["index"]) for row in outputs]
+    summary = {
+        "category": args.category,
+        "num_candidates": len(outputs),
+        "planner_oversample": oversample,
+        "num_valid_plans": len(valid_rows),
+        "fallback_used": fallback_used,
+        "warning": ("valid candidates fewer than requested; included invalid fallback samples" if fallback_used else ""),
+        "rerank_enabled": rerank_enabled,
+        "top_k": int(args.top_k or rerank_cf.get("top_k", num_valid)),
+        "weights": rerank_cf.get("weights", {}),
+        "samples": outputs,
+        "ranking": ranking,
+    }
+    save_json(output_dir / "candidates.json", summary)
+    if rerank_enabled:
+        breakdown = {
+            "category": args.category,
+            "num_candidates": len(rows),
+            "top_k": int(args.top_k or rerank_cf.get("top_k", num_valid)),
+            "weights": rerank_cf.get("weights", {}),
+            "candidates": [
+                {
+                    "index": row["index"],
+                    "local_z": row["local_z"],
+                    "valid": bool((row.get("grammar_energy") or {}).get("valid", row["is_valid_foreground"])),
+                    "invalid_reasons": (row.get("grammar_energy") or {}).get("invalid_reasons", row["invalid_reasons"]),
+                    "energy": row.get("grammar_energy"),
+                    "diagnostics": {
+                        **row["grammar_diagnostics"],
+                    },
+                }
+                for row in rows
+            ],
+            "ranking": ranking,
+        }
+        save_json(output_dir / "energy_breakdown.json", breakdown)
+    if rerank_enabled and outputs:
+        save_label_grid_mosaic([row["composed_y20"] for row in rows], output_dir / "raw_candidates_y20.png", columns=8, scale=8)
+        save_label_grid_mosaic([row["composed_y20"] for row in outputs], output_dir / "reranked_topk_y20.png", columns=min(4, len(outputs)), scale=12)
+    if args.save_raw_candidates:
+        save_json(output_dir / "raw_candidates.json", raw_candidates)
     save_jsonl(output_dir / "per_sample.jsonl", outputs)
-    print(format_metric_line("sample-foreground:", [("category", args.category), ("num_candidates", len(outputs)), ("valid_plans", len(valid_rows))]))
+    print(format_metric_line("sample-foreground:", [("category", args.category), ("num_candidates", len(outputs)), ("valid_plans", len(valid_rows)), ("rerank", rerank_enabled)]))
+    if rerank_enabled:
+        raw_valid = [row for row in rows if row["is_valid_foreground"]]
+        top_rows = [rows[i] for i in ranking[: int(args.top_k or rerank_cf.get("top_k", num_valid))]]
+        print(format_metric_line("grammar-rerank:", [
+            ("best_total_energy", float(rows[ranking[0]]["grammar_energy"]["total"]) if ranking else 0.0),
+            ("raw_valid_count", len(raw_valid)),
+            ("reranked_valid_count", sum(1 for row in top_rows if row["is_valid_foreground"])),
+            ("mean_dom_raw", sum(float(row["grammar_diagnostics"]["dominant_label_ratio"]) for row in raw_valid) / float(max(1, len(raw_valid)))),
+            ("mean_dom_topk", sum(float(row["grammar_diagnostics"]["dominant_label_ratio"]) for row in top_rows) / float(max(1, len(top_rows)))),
+            ("mean_div_raw", _mean(raw_valid, "label_diversity")),
+            ("mean_div_topk", _mean(top_rows, "label_diversity")),
+            ("mean_trans_raw", _mean_energy(raw_valid, "trans")),
+            ("mean_trans_topk", _mean_energy(top_rows, "trans")),
+            ("mean_motif_raw", _mean_energy(raw_valid, "motif")),
+            ("mean_motif_topk", _mean_energy(top_rows, "motif")),
+        ]))
     return 0
 
 

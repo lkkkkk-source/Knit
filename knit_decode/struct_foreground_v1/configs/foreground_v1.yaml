@@ -24,6 +24,31 @@ clustering:
   bbox_feature_weight: 0.0
   label_mass_threshold: 0.1
 
+grammar_bank:
+  enabled: true
+  motif_top_k: 200
+  smoothing_alpha: 0.001
+  tiny_component_threshold: 2
+  min_mode_samples: 3
+  occupancy_transition_condition_nonempty: true
+
+grammar_rerank:
+  enabled: false
+  top_k: 8
+  invalid_penalty: 999.0
+  weights:
+    area: 0.8
+    conn: 0.7
+    hist: 0.8
+    rowcol: 0.7
+    trans: 1.2
+    occ_trans: 0.8
+    motif: 1.3
+    div: 0.6
+    dom: 0.8
+    graph: 0.0
+    nmf: 0.0
+
 train:
   output_dir: knit_decode/struct_foreground_v1/runs/foreground_planner_v1
   epochs: 20

@@ -6,6 +6,7 @@ import random
 from pathlib import Path
 from typing import cast
 
+from .grammar_energy import save_grammar_bank_inspection
 from .utils import EXPECTED_DESCRIPTOR_DIM, IGNORE_INDEX, REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION, assert_no_forbidden_cache_fields, format_metric_line, foreground_area, label_diversity_on_fg, resolve_canonical_mode, save_json, save_jsonl
 
 
@@ -59,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cols", type=int, default=8)
     parser.add_argument("--cell-size", type=int, default=18)
     parser.add_argument("--label-mass-threshold", type=float, default=None)
+    parser.add_argument("--inspect-grammar-bank", action="store_true")
+    parser.add_argument("--grammar-category", type=str, default=None)
+    parser.add_argument("--top-motifs", type=int, default=20)
     return parser
 
 
@@ -335,6 +339,16 @@ def main(argv: list[str] | None = None) -> int:
     clustering_cf = config.get("clustering", {}) if isinstance(config.get("clustering", {}), dict) else {}
     canonical_mode = resolve_canonical_mode(data_cf)
     label_mass_threshold = float(args.label_mass_threshold if args.label_mass_threshold is not None else clustering_cf.get("label_mass_threshold", 0.05))
+    if args.inspect_grammar_bank:
+        grammar_bank = payload.get("grammar_bank")
+        if not isinstance(grammar_bank, dict):
+            raise ValueError("Cache does not contain grammar_bank. Rebuild cache with grammar_bank.enabled=true.")
+        grammar_category = str(args.grammar_category or args.category)
+        paths = save_grammar_bank_inspection(grammar_bank, grammar_category, output_dir, top_motifs=int(args.top_motifs))
+        print(format_metric_line("inspect-grammar-bank:", [("category", grammar_category), ("outputs", len(paths))]))
+        for path in paths.values():
+            print(path)
+        return 0
     if args.category not in payload["category_to_num_modes"]:
         raise ValueError(f"Category {args.category!r} not found in category_to_num_modes.")
     rng = random.Random(int(args.seed))
