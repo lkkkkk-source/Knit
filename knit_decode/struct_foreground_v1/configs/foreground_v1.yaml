@@ -35,6 +35,7 @@ grammar_bank:
 nmf_dictionary:
   enabled: true
   inspect_only: true
+  feature_mode: label_balanced_onehot
   rank_default: 8
   rank_by_category:
     Cable1: 12
@@ -60,6 +61,36 @@ nmf_dictionary:
   gamma_fg: 1.0
   save_basis_float16: false
   save_sample_codes: true
+  inspect_sparse_top_r: 3
+  label_balance:
+    enabled: true
+    mode: inverse_sqrt
+    min_weight: 0.5
+    max_weight: 8.0
+    eps: 1.0e-6
+  sample_normalize:
+    enabled: true
+    mode: area_sqrt
+    eps: 1.0e-6
+  channel_normalize:
+    enabled: true
+    mode: per_label_mass_sqrt
+    eps: 1.0e-6
+  basis_unweight_after_fit: true
+  basis_normalize_mass_max: true
+  sparsity:
+    alpha_W: 0.005
+    alpha_H: 0.001
+    l1_ratio: 0.85
+  prune:
+    enabled: true
+    percentile: 60
+    min_value: 1.0e-6
+  anti_collapse:
+    enabled: true
+    max_basis_dominant_ratio_warn: 0.90
+    max_collapsed_basis_fraction_warn: 0.50
+    min_mean_label_entropy_warn: 0.40
   code_mode_count_default: 8
   code_mode_count_by_category:
     Cable1: 8
