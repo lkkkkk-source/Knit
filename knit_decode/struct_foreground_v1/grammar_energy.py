@@ -231,6 +231,18 @@ def _motif2_counts(raw_y20: list[list[int]]) -> tuple[Counter[int], float, list[
     return counts, float(transition) / float(max(1, total)), [{"unique_value_count": int(k), "count": int(v)} for k, v in sorted(unique_hist.items())]
 
 
+def _entropy_from_counts(counts: dict[str, int] | Counter[int]) -> float:
+    total = float(sum(int(v) for v in counts.values()))
+    if total <= 0.0:
+        return 0.0
+    entropy = 0.0
+    for value in counts.values():
+        prob = float(value) / total
+        if prob > 0.0:
+            entropy -= prob * math.log(prob, 2)
+    return float(entropy)
+
+
 def compute_candidate_descriptors(y20: list[list[int]], config: dict[str, Any] | None = None) -> dict[str, Any]:
     raw_y20 = [[int(v) for v in row] for row in _as_list(y20)]
     _validate_y20(raw_y20)
@@ -289,6 +301,7 @@ def compute_candidate_descriptors(y20: list[list[int]], config: dict[str, Any] |
         "occupancy_transition_v_norm_2x2": _normalize_matrix([[float(v) for v in row] for row in occ_v]),
         "motif2_counts": {str(k): int(v) for k, v in motif_counts.items()},
         "motif2_total_count": int(sum(motif_counts.values())),
+        "motif2_entropy": _entropy_from_counts(motif_counts),
         "patch2x2_transition_ratio": motif_ratio,
         "patch2x2_unique_label_hist": motif_unique_hist,
         "num_connected_components": int(num_components),
@@ -345,6 +358,7 @@ def aggregate_descriptor_stats(descs: list[dict[str, Any]], config: dict[str, An
         "tiny_island_count_quantiles": _quantiles([d["tiny_island_count"] for d in descs]),
         "label_diversity_quantiles": _quantiles([d["label_diversity"] for d in descs]),
         "dominant_label_ratio_quantiles": _quantiles([d["dominant_label_ratio"] for d in descs]),
+        "motif2_entropy_quantiles": _quantiles([d["motif2_entropy"] for d in descs]),
         "same_label_h_ratio_mean": sum(float(d["same_label_h_ratio"]) for d in descs) / float(max(1, len(descs))),
         "same_label_v_ratio_mean": sum(float(d["same_label_v_ratio"]) for d in descs) / float(max(1, len(descs))),
         "diff_label_h_ratio_mean": sum(float(d["diff_label_h_ratio"]) for d in descs) / float(max(1, len(descs))),
@@ -436,6 +450,57 @@ def _flatten_matrix(matrix: list[list[float]]) -> list[float]:
     return [float(v) for row in matrix for v in row]
 
 
+def _offdiag_distribution(matrix: list[list[float]]) -> tuple[list[float], float]:
+    flat: list[float] = []
+    same = 0.0
+    total = 0.0
+    for i, row in enumerate(matrix):
+        for j, value in enumerate(row):
+            v = float(value)
+            total += v
+            if i == j:
+                same += v
+            else:
+                flat.append(v)
+    diff = max(0.0, total - same)
+    if diff <= 0.0:
+        return [0.0 for _ in flat], 0.0
+    return [v / diff for v in flat], diff / max(1e-12, total)
+
+
+def _transition_energy_direction(candidate: list[list[float]], prior: list[list[float]]) -> tuple[float, float, float, float, float]:
+    cand_full = _flatten_matrix(candidate)
+    prior_full = _flatten_matrix(prior)
+    cand_off, cand_diff = _offdiag_distribution(candidate)
+    prior_off, prior_diff = _offdiag_distribution(prior)
+    cand_same = max(0.0, 1.0 - cand_diff)
+    prior_same = max(0.0, 1.0 - prior_diff)
+    missing_penalty = 0.0
+    if prior_diff > 0.15 and cand_diff < 0.03:
+        missing_penalty = 2.0
+    energy = 0.25 * js_divergence(cand_full, prior_full) + 0.25 * ((cand_same - prior_same) ** 2) + 0.50 * js_divergence(cand_off, prior_off) + missing_penalty
+    return float(energy), float(cand_same), float(cand_diff), float(prior_diff), float(missing_penalty)
+
+
+def _q(stats: dict[str, Any] | None, key: str, qkey: str) -> float | None:
+    if not isinstance(stats, dict):
+        return None
+    quantiles = stats.get(key)
+    if not isinstance(quantiles, dict) or qkey not in quantiles:
+        return None
+    return float(quantiles[qkey])
+
+
+def _strict_lower(category_value: float | None, mode_value: float | None) -> float:
+    values = [v for v in (category_value, mode_value) if v is not None]
+    return max(values) if values else 0.0
+
+
+def _strict_upper(category_value: float | None, mode_value: float | None) -> float:
+    values = [v for v in (category_value, mode_value) if v is not None]
+    return min(values) if values else 1.0
+
+
 def _hinge_quantile(value: float, quantiles: dict[str, float] | None, *, low_key: str = "q10", high_key: str = "q90", far_low_key: str = "q01", far_high_key: str = "q99", clip: float = 5.0) -> float:
     if not quantiles:
         return 0.0
@@ -476,6 +541,19 @@ class GrammarEnergy:
                 return mode["stats"]
         return entry["category_stats"]
 
+    def _category_and_mode_stats(self, category: str, mode_z: int | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        categories = self.grammar_bank.get("categories", {})
+        if category not in categories:
+            raise KeyError(f"grammar_bank missing category {category!r}")
+        entry = categories[category]
+        category_stats = entry["category_stats"]
+        mode_stats = None
+        if mode_z is not None:
+            mode = entry.get("modes", {}).get(str(int(mode_z)))
+            if isinstance(mode, dict) and int(mode.get("num_samples", 0)) >= int(self.config.get("min_mode_samples", 3)) and not bool(mode.get("fallback_to_category", False)):
+                mode_stats = mode["stats"]
+        return category_stats, mode_stats
+
     def hard_valid(self, y20: list[list[int]], category: str, mode_z: int | None = None) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         try:
@@ -505,23 +583,63 @@ class GrammarEnergy:
 
     def score(self, y20: list[list[int]], category: str, mode_z: int | None = None) -> dict[str, Any]:
         desc = compute_candidate_descriptors(y20, self.config)
-        stats = self._stats(category, mode_z)
+        category_stats, mode_stats = self._category_and_mode_stats(category, mode_z)
+        stats = mode_stats or category_stats
         valid, reasons = self.hard_valid(y20, category, mode_z)
         area_e = _hinge_quantile(float(desc["foreground_area_ratio"]), stats.get("foreground_area_ratio_quantiles"))
         hist_e = js_divergence(desc["label_hist_norm_16"], stats.get("label_hist_norm_16_mean", [0.0] * NUM_LABELS))
-        trans_e = 0.5 * js_divergence(_flatten_matrix(desc["transition_h_norm_16x16"]), _flatten_matrix(stats.get("transition_h_norm_16x16", [[0.0] * NUM_LABELS for _ in range(NUM_LABELS)]))) + 0.5 * js_divergence(_flatten_matrix(desc["transition_v_norm_16x16"]), _flatten_matrix(stats.get("transition_v_norm_16x16", [[0.0] * NUM_LABELS for _ in range(NUM_LABELS)])))
+        trans_h_e, same_h, diff_h, prior_diff_h, missing_h = _transition_energy_direction(desc["transition_h_norm_16x16"], stats.get("transition_h_norm_16x16", [[0.0] * NUM_LABELS for _ in range(NUM_LABELS)]))
+        trans_v_e, same_v, diff_v, prior_diff_v, missing_v = _transition_energy_direction(desc["transition_v_norm_16x16"], stats.get("transition_v_norm_16x16", [[0.0] * NUM_LABELS for _ in range(NUM_LABELS)]))
+        trans_missing_penalty = missing_h + missing_v
+        trans_e = 0.5 * trans_h_e + 0.5 * trans_v_e
         occ_e = 0.5 * js_divergence(_flatten_matrix(desc["occupancy_transition_h_norm_2x2"]), _flatten_matrix(stats.get("occupancy_transition_h_norm_2x2", [[0.0, 0.0], [0.0, 0.0]]))) + 0.5 * js_divergence(_flatten_matrix(desc["occupancy_transition_v_norm_2x2"]), _flatten_matrix(stats.get("occupancy_transition_v_norm_2x2", [[0.0, 0.0], [0.0, 0.0]])))
-        motif_e = sparse_js_for_motifs(desc["motif2_counts"], stats)
+        motif_js = sparse_js_for_motifs(desc["motif2_counts"], stats)
+        motif_cat_q10 = _q(category_stats, "motif2_entropy_quantiles", "q10")
+        motif_mode_q10 = _q(mode_stats, "motif2_entropy_quantiles", "q10")
+        motif_lower = _strict_lower(motif_cat_q10, motif_mode_q10)
+        motif_entropy = float(desc["motif2_entropy"])
+        motif_entropy_penalty = 0.0
+        if motif_entropy < motif_lower:
+            motif_entropy_penalty = ((motif_lower - motif_entropy) / max(1.0, motif_lower)) ** 2
+        if motif_lower >= 1.0 and motif_entropy < 0.1:
+            motif_entropy_penalty += 5.0
+        motif_entropy_penalty = min(10.0, motif_entropy_penalty)
+        motif_e = motif_js + motif_entropy_penalty
         rowcol_e = 0.5 * wasserstein_1d(desc["row_fg_projection"], stats.get("row_fg_projection_mean", [0.0] * CANONICAL_SIZE)) + 0.5 * wasserstein_1d(desc["col_fg_projection"], stats.get("col_fg_projection_mean", [0.0] * CANONICAL_SIZE))
         conn_e = (
             _hinge_quantile(float(desc["num_connected_components"]), stats.get("num_components_quantiles"))
             + _hinge_quantile(float(desc["largest_component_ratio"]), stats.get("largest_component_ratio_quantiles"))
             + _hinge_quantile(float(desc["tiny_island_count"]), stats.get("tiny_island_count_quantiles"))
         ) / 3.0
-        div_q = stats.get("label_diversity_quantiles", {})
-        div_e = max(0.0, float(div_q.get("q10", 0.0)) - float(desc["label_diversity"])) ** 2
-        dom_q = stats.get("dominant_label_ratio_quantiles", {})
-        dom_e = max(0.0, float(desc["dominant_label_ratio"]) - float(dom_q.get("q90", 1.0))) ** 2
+        div_cat_q10 = _q(category_stats, "label_diversity_quantiles", "q10")
+        div_mode_q10 = _q(mode_stats, "label_diversity_quantiles", "q10")
+        div_lower = _strict_lower(div_cat_q10, div_mode_q10)
+        label_div = float(desc["label_diversity"])
+        div_penalty_reason = ""
+        div_e = 0.0
+        if label_div < div_lower:
+            div_e = ((div_lower - label_div) / max(1.0, div_lower)) ** 2
+            div_penalty_reason = "below_strict_q10"
+        if div_cat_q10 is not None and div_cat_q10 >= 3.0 and label_div <= 1.0:
+            div_e += 5.0
+            div_penalty_reason = "single_label_below_category_diversity"
+        div_e = min(10.0, div_e)
+        dom_cat_q90 = _q(category_stats, "dominant_label_ratio_quantiles", "q90")
+        dom_mode_q90 = _q(mode_stats, "dominant_label_ratio_quantiles", "q90")
+        dom_upper = _strict_upper(dom_cat_q90, dom_mode_q90)
+        dom_ratio = float(desc["dominant_label_ratio"])
+        dom_q995 = _q(category_stats, "dominant_label_ratio_quantiles", "q995")
+        dom_scale = max(0.05, (dom_q995 - dom_cat_q90) if dom_q995 is not None and dom_cat_q90 is not None else 0.1)
+        dom_penalty_reason = ""
+        dom_e = 0.0
+        margin = float(self.config.get("dominant_label_margin", 0.03))
+        if dom_ratio > dom_upper + margin:
+            dom_e = ((dom_ratio - dom_upper) / dom_scale) ** 2
+            dom_penalty_reason = "above_strict_q90"
+        if dom_cat_q90 is not None and dom_cat_q90 < 0.95 and dom_ratio >= 0.98:
+            dom_e += 5.0
+            dom_penalty_reason = "near_single_label_above_category_q90"
+        dom_e = min(10.0, dom_e)
         parts = {
             "area": float(area_e),
             "conn": float(conn_e),
@@ -546,7 +664,26 @@ class GrammarEnergy:
             "diagnostics": {
                 "foreground_area_ratio": float(desc["foreground_area_ratio"]),
                 "label_diversity": int(desc["label_diversity"]),
+                "label_diversity_category_q10": div_cat_q10,
+                "label_diversity_mode_q10": div_mode_q10,
+                "label_diversity_lower_used": div_lower,
+                "div_penalty_reason": div_penalty_reason,
                 "dominant_label_ratio": float(desc["dominant_label_ratio"]),
+                "dominant_category_q90": dom_cat_q90,
+                "dominant_mode_q90": dom_mode_q90,
+                "dominant_upper_used": dom_upper,
+                "dom_penalty_reason": dom_penalty_reason,
+                "same_label_h_ratio": same_h,
+                "same_label_v_ratio": same_v,
+                "diff_label_h_ratio": diff_h,
+                "diff_label_v_ratio": diff_v,
+                "prior_diff_h_ratio": prior_diff_h,
+                "prior_diff_v_ratio": prior_diff_v,
+                "trans_diff_missing_penalty": trans_missing_penalty,
+                "motif2_entropy": motif_entropy,
+                "motif2_entropy_category_q10": motif_cat_q10,
+                "motif2_entropy_mode_q10": motif_mode_q10,
+                "motif2_entropy_lower_used": motif_lower,
                 "num_components": int(desc["num_connected_components"]),
                 "largest_component_ratio": float(desc["largest_component_ratio"]),
                 "tiny_island_count": int(desc["tiny_island_count"]),

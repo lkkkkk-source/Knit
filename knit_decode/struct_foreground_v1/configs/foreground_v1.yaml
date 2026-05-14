@@ -37,15 +37,15 @@ grammar_rerank:
   top_k: 8
   invalid_penalty: 999.0
   weights:
-    area: 0.8
-    conn: 0.7
+    area: 0.3
+    conn: 0.4
     hist: 0.8
-    rowcol: 0.7
-    trans: 1.2
+    rowcol: 0.3
+    trans: 2.0
     occ_trans: 0.8
-    motif: 1.3
-    div: 0.6
-    dom: 0.8
+    motif: 2.0
+    div: 2.0
+    dom: 2.0
     graph: 0.0
     nmf: 0.0
 

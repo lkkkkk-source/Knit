@@ -21,6 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--save-raw-candidates", action="store_true")
     parser.add_argument("--energy-config", type=Path, default=None)
+    parser.add_argument("--diverse-topk", dest="diverse_topk", action="store_true", default=None)
+    parser.add_argument("--no-diverse-topk", dest="diverse_topk", action="store_false")
+    parser.add_argument("--diversity-weight", type=float, default=0.25)
+    parser.add_argument("--duplicate-mask-iou-threshold", type=float, default=0.95)
+    parser.add_argument("--duplicate-label-hamming-threshold", type=float, default=0.05)
     return parser
 
 
@@ -58,6 +63,32 @@ def _mean_energy(rows: list[dict[str, object]], key: str) -> float:
     return sum(vals) / float(max(1, len(vals)))
 
 
+def _summary_means(rows: list[dict[str, object]]) -> dict[str, float]:
+    if not rows:
+        return {
+            "dominant_label_ratio": 0.0,
+            "label_diversity": 0.0,
+            "total": 0.0,
+            "trans": 0.0,
+            "motif": 0.0,
+            "div": 0.0,
+            "dom": 0.0,
+        }
+    return {
+        "dominant_label_ratio": sum(float(row["grammar_diagnostics"]["dominant_label_ratio"]) for row in rows) / float(len(rows)),
+        "label_diversity": sum(float(row["grammar_diagnostics"]["label_diversity"]) for row in rows) / float(len(rows)),
+        "total": _mean_energy(rows, "total"),
+        "trans": _mean_energy(rows, "trans"),
+        "motif": _mean_energy(rows, "motif"),
+        "div": _mean_energy(rows, "div"),
+        "dom": _mean_energy(rows, "dom"),
+    }
+
+
+def _summary_improvement(selected: dict[str, float], raw: dict[str, float]) -> dict[str, float]:
+    return {key: float(selected.get(key, 0.0)) - float(raw.get(key, 0.0)) for key in sorted(set(raw) | set(selected))}
+
+
 def _load_energy_override(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
@@ -73,6 +104,107 @@ def _load_energy_override(path: Path | None) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError(f"--energy-config must contain a mapping, got {type(payload)}")
     return payload
+
+
+def _mask_iou(a: list[list[int]], b: list[list[int]]) -> float:
+    inter = 0
+    union = 0
+    for y in range(20):
+        for x in range(20):
+            av = int(a[y][x]) > 0
+            bv = int(b[y][x]) > 0
+            inter += int(av and bv)
+            union += int(av or bv)
+    return float(inter) / float(max(1, union))
+
+
+def _y20_hamming(a: list[list[int]], b: list[list[int]]) -> float:
+    diff = 0
+    total = 0
+    for y in range(20):
+        for x in range(20):
+            total += 1
+            diff += int(int(a[y][x]) != int(b[y][x]))
+    return float(diff) / float(max(1, total))
+
+
+def _l1(a: list[float], b: list[float]) -> float:
+    return sum(abs(float(x) - float(y)) for x, y in zip(a, b)) / float(max(1, min(len(a), len(b))))
+
+
+def _candidate_distance(a: dict[str, object], b: dict[str, object]) -> float:
+    ad = a["grammar_descriptor"]
+    bd = b["grammar_descriptor"]
+    return (
+        _l1(ad["label_hist_norm_16"], bd["label_hist_norm_16"])
+        + _l1(ad["row_fg_projection"], bd["row_fg_projection"])
+        + _l1(ad["col_fg_projection"], bd["col_fg_projection"])
+        + (1.0 - _mask_iou(ad["fg_mask"], bd["fg_mask"]))
+        + _y20_hamming(a["composed_y20"], b["composed_y20"])
+    ) / 5.0
+
+
+def _select_diverse_topk(
+    rows: list[dict[str, object]],
+    energy_order: list[int],
+    top_k: int,
+    *,
+    diversity_weight: float,
+    duplicate_mask_iou_threshold: float,
+    duplicate_label_hamming_threshold: float,
+) -> tuple[list[int], list[int], bool]:
+    rows_by_index = {int(row["index"]): row for row in rows}
+    selected: list[int] = []
+    skipped: list[int] = []
+    remaining = list(energy_order)
+    while remaining and len(selected) < top_k:
+        best_index = None
+        best_score = float("inf")
+        for idx in remaining:
+            row = rows_by_index[idx]
+            duplicate = False
+            for selected_idx in selected:
+                selected_row = rows_by_index[selected_idx]
+                mask_iou = _mask_iou(row["grammar_descriptor"]["fg_mask"], selected_row["grammar_descriptor"]["fg_mask"])
+                hamming = _y20_hamming(row["composed_y20"], selected_row["composed_y20"])
+                if mask_iou > duplicate_mask_iou_threshold or hamming < duplicate_label_hamming_threshold:
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+            min_dist = min((_candidate_distance(row, rows_by_index[s]) for s in selected), default=0.0)
+            total = float((row.get("grammar_energy") or {}).get("total", 0.0))
+            adjusted = total - float(diversity_weight) * min_dist
+            if adjusted < best_score:
+                best_score = adjusted
+                best_index = idx
+        if best_index is None:
+            break
+        selected.append(best_index)
+        remaining = [idx for idx in remaining if idx != best_index]
+    selected_set = set(selected)
+    for idx in energy_order:
+        if idx in selected_set:
+            continue
+        duplicate = False
+        for selected_idx in selected:
+            row = rows_by_index[idx]
+            selected_row = rows_by_index[selected_idx]
+            if _mask_iou(row["grammar_descriptor"]["fg_mask"], selected_row["grammar_descriptor"]["fg_mask"]) > duplicate_mask_iou_threshold or _y20_hamming(row["composed_y20"], selected_row["composed_y20"]) < duplicate_label_hamming_threshold:
+                duplicate = True
+                break
+        if duplicate:
+            skipped.append(idx)
+    duplicate_fill = False
+    if len(selected) < top_k:
+        duplicate_fill = True
+        for idx in energy_order:
+            if idx not in selected_set:
+                selected.append(idx)
+                selected_set.add(idx)
+            if len(selected) >= top_k:
+                break
+    return selected[:top_k], skipped, duplicate_fill
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     if rerank_enabled and not isinstance(grammar_bank, dict):
         raise ValueError("Grammar rerank requested but cache does not contain grammar_bank. Rebuild the cache first.")
     grammar_energy = GrammarEnergy(grammar_bank, weights=rerank_cf.get("weights", {}), config={**config.get("grammar_bank", {}), **rerank_cf}) if rerank_enabled else None
+    diverse_topk = bool(args.diverse_topk if args.diverse_topk is not None else rerank_enabled)
     category_to_num_modes = checkpoint_get(payload, "category_to_num_modes")
     if args.category not in category_to_num_modes:
         raise ValueError(
@@ -217,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
             composed_y20 = compose_foreground(fg_mask, fg_label, out["bbox_pred"][index].detach().cpu().tolist(), output_dir=None, canonical_mode=canonical_mode)["composed_y20"]
             grammar_desc = compute_candidate_descriptors(composed_y20, config.get("grammar_bank", {}) if isinstance(config.get("grammar_bank", {}), dict) else {})
             energy = grammar_energy.score(composed_y20, args.category, mode_z=int(out["local_z"][index].item())) if grammar_energy is not None else None
+            energy_diag = energy.get("diagnostics", {}) if isinstance(energy, dict) else {}
             rows.append({
                 "index": index,
                 "local_z": int(out["local_z"][index].item()),
@@ -234,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
                 "nearest_other_category_distance": nearest_other_distance,
                 "category_descriptor_margin": margin,
                 "composed_y20": composed_y20,
+                "grammar_descriptor": grammar_desc,
                 "grammar_diagnostics": {
                     "foreground_area_ratio": float(grammar_desc["foreground_area_ratio"]),
                     "label_diversity": int(grammar_desc["label_diversity"]),
@@ -241,14 +376,32 @@ def main(argv: list[str] | None = None) -> int:
                     "num_components": int(grammar_desc["num_connected_components"]),
                     "largest_component_ratio": float(grammar_desc["largest_component_ratio"]),
                     "tiny_island_count": int(grammar_desc["tiny_island_count"]),
+                    **energy_diag,
                 },
                 "grammar_energy": energy,
             })
         valid_rows = [row for row in rows if row["is_valid_foreground"]]
         fallback_used = False
+        duplicate_skipped_indices: list[int] = []
+        duplicate_fill = False
+        ranking_energy_only: list[int] = []
+        selected_topk_indices: list[int] = []
         if rerank_enabled:
-            ranked = sorted(rows, key=lambda row: float((row.get("grammar_energy") or {}).get("total", 0.0)))
-            selected = ranked[: int(args.top_k or rerank_cf.get("top_k", num_valid))]
+            top_k = int(args.top_k or rerank_cf.get("top_k", num_valid))
+            ranking_energy_only = [int(rows[i]["index"]) for i in sorted(range(len(rows)), key=lambda i: float((rows[i].get("grammar_energy") or {}).get("total", 0.0)))]
+            if diverse_topk:
+                selected_topk_indices, duplicate_skipped_indices, duplicate_fill = _select_diverse_topk(
+                    rows,
+                    ranking_energy_only,
+                    top_k,
+                    diversity_weight=float(args.diversity_weight),
+                    duplicate_mask_iou_threshold=float(args.duplicate_mask_iou_threshold),
+                    duplicate_label_hamming_threshold=float(args.duplicate_label_hamming_threshold),
+                )
+            else:
+                selected_topk_indices = ranking_energy_only[:top_k]
+            rows_by_index_for_select = {int(row["index"]): row for row in rows}
+            selected = [rows_by_index_for_select[idx] for idx in selected_topk_indices if idx in rows_by_index_for_select]
         else:
             selected = valid_rows[:num_valid]
             if len(selected) < int(args.num_candidates):
@@ -304,11 +457,7 @@ def main(argv: list[str] | None = None) -> int:
                 "composed_y20": row["composed_y20"],
             })
     finish_progress()
-    ranking = (
-        [int(rows[i]["index"]) for i in sorted(range(len(rows)), key=lambda i: float((rows[i].get("grammar_energy") or {}).get("total", 0.0)))]
-        if rerank_enabled
-        else [int(row.get("index", i)) for i, row in enumerate(outputs)]
-    )
+    ranking = ranking_energy_only if rerank_enabled else [int(row.get("index", i)) for i, row in enumerate(outputs)]
     summary = {
         "category": args.category,
         "num_candidates": len(outputs),
@@ -321,14 +470,31 @@ def main(argv: list[str] | None = None) -> int:
         "weights": rerank_cf.get("weights", {}),
         "samples": outputs,
         "ranking": ranking,
+        "selected_topk_indices": selected_topk_indices if rerank_enabled else ranking,
     }
     save_json(output_dir / "candidates.json", summary)
     if rerank_enabled:
+        rows_by_index = {int(row["index"]): row for row in rows}
+        energy_top_rows = [rows_by_index[i] for i in ranking_energy_only[: int(args.top_k or rerank_cf.get("top_k", num_valid))] if i in rows_by_index]
+        selected_top_rows = [rows_by_index[i] for i in selected_topk_indices if i in rows_by_index]
+        raw_mean = _summary_means(rows)
+        energy_topk_mean = _summary_means(energy_top_rows)
+        selected_topk_mean = _summary_means(selected_top_rows)
         breakdown = {
             "category": args.category,
             "num_candidates": len(rows),
             "top_k": int(args.top_k or rerank_cf.get("top_k", num_valid)),
             "weights": rerank_cf.get("weights", {}),
+            "diverse_topk": diverse_topk,
+            "diversity_weight": float(args.diversity_weight),
+            "duplicate_mask_iou_threshold": float(args.duplicate_mask_iou_threshold),
+            "duplicate_label_hamming_threshold": float(args.duplicate_label_hamming_threshold),
+            "summary": {
+                "raw_mean": raw_mean,
+                "energy_topk_mean": energy_topk_mean,
+                "selected_topk_mean": selected_topk_mean,
+                "improvement": _summary_improvement(selected_topk_mean, raw_mean),
+            },
             "candidates": [
                 {
                     "index": row["index"],
@@ -343,6 +509,10 @@ def main(argv: list[str] | None = None) -> int:
                 for row in rows
             ],
             "ranking": ranking,
+            "ranking_energy_only": ranking_energy_only,
+            "selected_topk_indices": selected_topk_indices,
+            "duplicate_skipped_indices": duplicate_skipped_indices,
+            "duplicate_fill": duplicate_fill,
         }
         save_json(output_dir / "energy_breakdown.json", breakdown)
     if rerank_enabled and outputs:
@@ -353,11 +523,11 @@ def main(argv: list[str] | None = None) -> int:
     save_jsonl(output_dir / "per_sample.jsonl", outputs)
     print(format_metric_line("sample-foreground:", [("category", args.category), ("num_candidates", len(outputs)), ("valid_plans", len(valid_rows)), ("rerank", rerank_enabled)]))
     if rerank_enabled:
-        raw_valid = [row for row in rows if row["is_valid_foreground"]]
+        raw_valid = rows
         rows_by_index = {int(row["index"]): row for row in rows}
-        top_rows = [rows_by_index[i] for i in ranking[: int(args.top_k or rerank_cf.get("top_k", num_valid))] if i in rows_by_index]
+        top_rows = [rows_by_index[i] for i in selected_topk_indices if i in rows_by_index]
         print(format_metric_line("grammar-rerank:", [
-            ("best_total_energy", float(rows[ranking[0]]["grammar_energy"]["total"]) if ranking else 0.0),
+            ("best_total_energy", float(rows_by_index[ranking[0]]["grammar_energy"]["total"]) if ranking and ranking[0] in rows_by_index else 0.0),
             ("raw_valid_count", len(raw_valid)),
             ("reranked_valid_count", sum(1 for row in top_rows if row["is_valid_foreground"])),
             ("mean_dom_raw", sum(float(row["grammar_diagnostics"]["dominant_label_ratio"]) for row in raw_valid) / float(max(1, len(raw_valid)))),
@@ -368,6 +538,10 @@ def main(argv: list[str] | None = None) -> int:
             ("mean_trans_topk", _mean_energy(top_rows, "trans")),
             ("mean_motif_raw", _mean_energy(raw_valid, "motif")),
             ("mean_motif_topk", _mean_energy(top_rows, "motif")),
+            ("mean_div_energy_raw", _mean_energy(raw_valid, "div")),
+            ("mean_div_energy_topk", _mean_energy(top_rows, "div")),
+            ("mean_dom_energy_raw", _mean_energy(raw_valid, "dom")),
+            ("mean_dom_energy_topk", _mean_energy(top_rows, "dom")),
         ]))
     return 0
 
