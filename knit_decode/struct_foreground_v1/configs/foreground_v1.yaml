@@ -36,6 +36,46 @@ nmf_dictionary:
   enabled: true
   inspect_only: true
   feature_mode: label_balanced_onehot
+  dual_dictionary:
+    enabled: true
+    schema_version: foreground_v1_nmf_dual_dictionary_v1
+  support_dictionary:
+    feature_mode: fg_mask
+    rank_same_as_label: true
+    normalize_sample_area: false
+    smooth:
+      enabled: true
+      kernel_size: 3
+      strength: 0.25
+    alpha_W: 0.0005
+    alpha_H: 0.0005
+    l1_ratio: 0.2
+    prune:
+      enabled: false
+    gamma_fg: 1.0
+    min_active_pixels: 8
+  label_dictionary:
+    feature_mode: label_balanced_onehot
+    use_existing_balanced_config: true
+    basis_unweight_after_fit: false
+    alpha_W: 0.001
+    alpha_H: 0.001
+    l1_ratio: 0.5
+    prune:
+      enabled: false
+  prior_fusion:
+    fg_from: support_dictionary
+    label_prob_from: label_dictionary
+    label_mass_mask_from_support: true
+    support_mass_threshold: 0.05
+    label_confidence_threshold: 0.0
+    normalize_label_prob: true
+  category_adaptive:
+    enabled: true
+    use_category_stats: true
+    min_effective_rank: 2
+    allow_low_label_entropy_if_category_low_entropy: true
+    allow_low_diversity_if_category_low_diversity: true
   rank_default: 8
   rank_by_category:
     Cable1: 12
@@ -91,6 +131,26 @@ nmf_dictionary:
     max_basis_dominant_ratio_warn: 0.90
     max_collapsed_basis_fraction_warn: 0.50
     min_mean_label_entropy_warn: 0.40
+  category_overrides:
+    Links1:
+      support_dictionary:
+        l1_ratio: 0.1
+      anti_collapse:
+        allow_single_label: true
+    Links2:
+      support_dictionary:
+        l1_ratio: 0.1
+      anti_collapse:
+        allow_single_label: true
+    Mesh:
+      support_dictionary:
+        l1_ratio: 0.1
+        min_active_pixels: 4
+      allow_fragmented_support: true
+    Miss:
+      support_dictionary:
+        min_active_pixels: 2
+      allow_sparse_support: true
   code_mode_count_default: 8
   code_mode_count_by_category:
     Cable1: 8

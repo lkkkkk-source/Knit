@@ -706,6 +706,24 @@ class GrammarEnergy:
             },
         }
 
+    def score_matrix_against_category(self, y20: list[list[int]], category: str, mode_z: int | None = None) -> dict[str, Any]:
+        """Score a real matrix for offline category classification.
+
+        Rerank hard-valid gates are intentionally not used as classifier invalid
+        penalties except for empty or illegal matrices.
+        """
+        result = self.score(y20, category, mode_z)
+        reasons = [str(reason) for reason in result.get("invalid_reasons", [])]
+        diagnostics = result.get("diagnostics", {}) if isinstance(result.get("diagnostics"), dict) else {}
+        is_empty = float(diagnostics.get("foreground_area_ratio", 0.0)) <= 0.0 or "empty_foreground" in reasons
+        classifier_penalized = bool(is_empty)
+        if reasons and not classifier_penalized:
+            result["total"] = float(result["total"]) - self.invalid_penalty
+        result["classifier_valid"] = bool(not classifier_penalized)
+        result["classifier_invalid_reasons"] = ["empty_foreground"] if classifier_penalized else []
+        result["rerank_invalid_reasons_ignored_for_classifier"] = [] if classifier_penalized else reasons
+        return result
+
 
 def save_grammar_bank_inspection(grammar_bank: dict[str, Any], category: str, output_dir: Path, *, top_motifs: int = 20) -> dict[str, str]:
     if category not in grammar_bank.get("categories", {}):
