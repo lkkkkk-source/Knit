@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from .grammar_energy import build_grammar_bank
+from .nmf_dictionary import build_dictionary_bank, dictionary_bank_summary
 from .utils import IGNORE_INDEX, REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION, assert_no_forbidden_cache_fields, bbox_vector, canonicalize_foreground, clustering_feature_from_parts, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
 
 
@@ -65,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     planner_cf = config["planner"]
     clustering_cf = cast(dict[str, object], config.get("clustering", {})) if isinstance(config.get("clustering", {}), dict) else {}
     grammar_bank_cf = cast(dict[str, object], config.get("grammar_bank", {})) if isinstance(config.get("grammar_bank", {}), dict) else {}
+    nmf_dictionary_cf = cast(dict[str, object], config.get("nmf_dictionary", {})) if isinstance(config.get("nmf_dictionary", {}), dict) else {}
     canonical_mode = resolve_canonical_mode(data_cf)
     ignore_index = require_ignore_index(data_cf)
     manifest_path = Path(args.manifest or data_cf["train_manifest"])
@@ -231,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
                 item["num_modes_for_category"] = 0
 
     grammar_bank = build_grammar_bank(items, grammar_bank_cf) if bool(grammar_bank_cf.get("enabled", True)) else {"enabled": False, "categories": {}}
+    dictionary_bank = build_dictionary_bank(items, nmf_dictionary_cf)
     if args.fit_kmeans:
         for category, samples in nondegenerate_by_category.items():
             num_modes_c = int(category_to_num_modes.get(category, 1))
@@ -307,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         "category_foreground_area_stats": category_foreground_area_stats,
         "centroid_sketch_by_category": centroid_sketch_by_category,
         "grammar_bank": grammar_bank,
+        "dictionary_bank": dictionary_bank,
         "descriptor_slices": descriptor_slices or {},
         "config": config,
     }
@@ -317,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     num_centroids = sum(len(centroids) for centroids in centroid_sketch_by_category.values())
     grammar_categories = sorted(grammar_bank.get("categories", {}).keys()) if isinstance(grammar_bank, dict) else []
     grammar_total_modes = sum(len(entry.get("modes", {})) for entry in grammar_bank.get("categories", {}).values()) if isinstance(grammar_bank, dict) else 0
+    dictionary_summary = dictionary_bank_summary(dictionary_bank)
     print(
         format_metric_line(
             "saved foreground cache:",
@@ -330,6 +335,11 @@ def main(argv: list[str] | None = None) -> int:
                 ("grammar_bank_enabled", bool(grammar_bank.get("enabled", False)) if isinstance(grammar_bank, dict) else False),
                 ("grammar_categories", len(grammar_categories)),
                 ("grammar_total_modes", grammar_total_modes),
+                ("dictionary_bank_enabled", dictionary_summary["enabled"]),
+                ("dictionary_categories", ",".join(cast(list[str], dictionary_summary["categories"]))),
+                ("total_nmf_basis", dictionary_summary["total_nmf_basis"]),
+                ("stores_onehot", False),
+                ("stores_X_matrix", False),
                 ("stores_large_features", False),
             ],
         )

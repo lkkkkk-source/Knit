@@ -32,6 +32,47 @@ grammar_bank:
   min_mode_samples: 3
   occupancy_transition_condition_nonempty: true
 
+nmf_dictionary:
+  enabled: true
+  inspect_only: true
+  rank_default: 8
+  rank_by_category:
+    Cable1: 12
+    Cable2: 12
+    Move1: 12
+    Move2: 12
+    Hem: 12
+    Mesh: 8
+    Tuck: 8
+    Links1: 4
+    Links2: 4
+    Miss: 6
+  max_iter: 1000
+  init: nndsvda
+  solver: cd
+  beta_loss: frobenius
+  alpha_W: 0.001
+  alpha_H: 0.001
+  l1_ratio: 0.7
+  random_state: 0
+  eps: 1.0e-8
+  prune_percentile: 0.0
+  gamma_fg: 1.0
+  save_basis_float16: false
+  save_sample_codes: true
+  code_mode_count_default: 8
+  code_mode_count_by_category:
+    Cable1: 8
+    Cable2: 8
+    Move1: 8
+    Move2: 8
+    Hem: 8
+    Mesh: 6
+    Tuck: 6
+    Links1: 4
+    Links2: 4
+    Miss: 4
+
 grammar_rerank:
   enabled: false
   top_k: 8
