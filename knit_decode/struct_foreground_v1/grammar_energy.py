@@ -34,6 +34,7 @@ DEFAULT_RERANK_WEIGHTS = {
     "motif": 1.3,
     "div": 0.6,
     "dom": 0.8,
+    "single_label": 1.0,
     "graph": 0.0,
     "nmf": 0.0,
 }
@@ -640,6 +641,16 @@ class GrammarEnergy:
             dom_e += 5.0
             dom_penalty_reason = "near_single_label_above_category_q90"
         dom_e = min(10.0, dom_e)
+        single_label_collapse = 0.0
+        single_label_reasons: list[str] = []
+        if div_cat_q10 is not None and div_cat_q10 > 1.0:
+            if label_div <= 1.0:
+                single_label_collapse += 5.0
+                single_label_reasons.append("label_diversity_le_1_with_category_q10_gt_1")
+            if dom_ratio >= 0.995:
+                single_label_collapse += 3.0
+                single_label_reasons.append("dominant_label_ratio_ge_0.995_with_category_q10_gt_1")
+        single_label_collapse_reason = ";".join(single_label_reasons)
         parts = {
             "area": float(area_e),
             "conn": float(conn_e),
@@ -650,10 +661,14 @@ class GrammarEnergy:
             "motif": float(motif_e),
             "div": float(div_e),
             "dom": float(dom_e),
+            "single_label_collapse": float(single_label_collapse),
             "graph": 0.0,
             "nmf": 0.0,
         }
-        total = sum(float(self.weights.get(key, 0.0)) * float(value) for key, value in parts.items())
+        total = 0.0
+        for key, value in parts.items():
+            weight_key = "single_label" if key == "single_label_collapse" else key
+            total += float(self.weights.get(weight_key, self.weights.get(key, 0.0))) * float(value)
         if not valid:
             total += self.invalid_penalty
         return {
@@ -673,6 +688,7 @@ class GrammarEnergy:
                 "dominant_mode_q90": dom_mode_q90,
                 "dominant_upper_used": dom_upper,
                 "dom_penalty_reason": dom_penalty_reason,
+                "single_label_collapse_reason": single_label_collapse_reason,
                 "same_label_h_ratio": same_h,
                 "same_label_v_ratio": same_v,
                 "diff_label_h_ratio": diff_h,

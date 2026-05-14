@@ -73,6 +73,7 @@ def _summary_means(rows: list[dict[str, object]]) -> dict[str, float]:
             "motif": 0.0,
             "div": 0.0,
             "dom": 0.0,
+            "single_label_collapse": 0.0,
         }
     return {
         "dominant_label_ratio": sum(float(row["grammar_diagnostics"]["dominant_label_ratio"]) for row in rows) / float(len(rows)),
@@ -82,6 +83,7 @@ def _summary_means(rows: list[dict[str, object]]) -> dict[str, float]:
         "motif": _mean_energy(rows, "motif"),
         "div": _mean_energy(rows, "div"),
         "dom": _mean_energy(rows, "dom"),
+        "single_label_collapse": _mean_energy(rows, "single_label_collapse"),
     }
 
 
@@ -144,6 +146,13 @@ def _candidate_distance(a: dict[str, object], b: dict[str, object]) -> float:
     ) / 5.0
 
 
+def _single_label_collapse(row: dict[str, object]) -> float:
+    energy = row.get("grammar_energy")
+    if not isinstance(energy, dict):
+        return 0.0
+    return float(energy.get("single_label_collapse", 0.0))
+
+
 def _select_diverse_topk(
     rows: list[dict[str, object]],
     energy_order: list[int],
@@ -152,16 +161,20 @@ def _select_diverse_topk(
     diversity_weight: float,
     duplicate_mask_iou_threshold: float,
     duplicate_label_hamming_threshold: float,
-) -> tuple[list[int], list[int], bool]:
+) -> tuple[list[int], list[int], list[int], bool, bool]:
     rows_by_index = {int(row["index"]): row for row in rows}
     selected: list[int] = []
     skipped: list[int] = []
+    collapse_skipped: list[int] = []
     remaining = list(energy_order)
+    has_noncollapse_candidate = any(_single_label_collapse(rows_by_index[idx]) <= 0.0 for idx in energy_order if idx in rows_by_index)
     while remaining and len(selected) < top_k:
         best_index = None
         best_score = float("inf")
         for idx in remaining:
             row = rows_by_index[idx]
+            if has_noncollapse_candidate and _single_label_collapse(row) > 0.0:
+                continue
             duplicate = False
             for selected_idx in selected:
                 selected_row = rows_by_index[selected_idx]
@@ -195,16 +208,31 @@ def _select_diverse_topk(
                 break
         if duplicate:
             skipped.append(idx)
+        if idx not in selected_set and has_noncollapse_candidate and _single_label_collapse(rows_by_index[idx]) > 0.0:
+            collapse_skipped.append(idx)
     duplicate_fill = False
+    collapse_fill = False
     if len(selected) < top_k:
         duplicate_fill = True
+        for idx in energy_order:
+            if idx not in selected_set and _single_label_collapse(rows_by_index[idx]) <= 0.0:
+                selected.append(idx)
+                selected_set.add(idx)
+            if len(selected) >= top_k:
+                break
+    if len(selected) < top_k:
+        collapse_fill = True
         for idx in energy_order:
             if idx not in selected_set:
                 selected.append(idx)
                 selected_set.add(idx)
             if len(selected) >= top_k:
                 break
-    return selected[:top_k], skipped, duplicate_fill
+    skipped = [idx for idx in skipped if idx not in selected_set]
+    collapse_skipped = [idx for idx in collapse_skipped if idx not in selected_set]
+    if not has_noncollapse_candidate and any(_single_label_collapse(rows_by_index[idx]) > 0.0 for idx in selected):
+        collapse_fill = True
+    return selected[:top_k], skipped, collapse_skipped, duplicate_fill, collapse_fill
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -383,14 +411,16 @@ def main(argv: list[str] | None = None) -> int:
         valid_rows = [row for row in rows if row["is_valid_foreground"]]
         fallback_used = False
         duplicate_skipped_indices: list[int] = []
+        collapse_skipped_indices: list[int] = []
         duplicate_fill = False
+        collapse_fill = False
         ranking_energy_only: list[int] = []
         selected_topk_indices: list[int] = []
         if rerank_enabled:
             top_k = int(args.top_k or rerank_cf.get("top_k", num_valid))
             ranking_energy_only = [int(rows[i]["index"]) for i in sorted(range(len(rows)), key=lambda i: float((rows[i].get("grammar_energy") or {}).get("total", 0.0)))]
             if diverse_topk:
-                selected_topk_indices, duplicate_skipped_indices, duplicate_fill = _select_diverse_topk(
+                selected_topk_indices, duplicate_skipped_indices, collapse_skipped_indices, duplicate_fill, collapse_fill = _select_diverse_topk(
                     rows,
                     ranking_energy_only,
                     top_k,
@@ -512,7 +542,9 @@ def main(argv: list[str] | None = None) -> int:
             "ranking_energy_only": ranking_energy_only,
             "selected_topk_indices": selected_topk_indices,
             "duplicate_skipped_indices": duplicate_skipped_indices,
+            "collapse_skipped_indices": collapse_skipped_indices,
             "duplicate_fill": duplicate_fill,
+            "collapse_fill": collapse_fill,
         }
         save_json(output_dir / "energy_breakdown.json", breakdown)
     if rerank_enabled and outputs:
@@ -542,6 +574,8 @@ def main(argv: list[str] | None = None) -> int:
             ("mean_div_energy_topk", _mean_energy(top_rows, "div")),
             ("mean_dom_energy_raw", _mean_energy(raw_valid, "dom")),
             ("mean_dom_energy_topk", _mean_energy(top_rows, "dom")),
+            ("mean_single_label_raw", _mean_energy(raw_valid, "single_label_collapse")),
+            ("mean_single_label_topk", _mean_energy(top_rows, "single_label_collapse")),
         ]))
     return 0
 

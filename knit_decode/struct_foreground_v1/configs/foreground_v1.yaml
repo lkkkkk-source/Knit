@@ -46,6 +46,7 @@ grammar_rerank:
     motif: 2.0
     div: 2.0
     dom: 2.0
+    single_label: 1.0
     graph: 0.0
     nmf: 0.0
 
