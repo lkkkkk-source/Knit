@@ -6,7 +6,7 @@ from collections import Counter
 from typing import Any
 
 
-DICTIONARY_BANK_SCHEMA_VERSION = "foreground_v1_nmf_dictionary_bank_labelbalanced_v1"
+DICTIONARY_BANK_SCHEMA_VERSION = "foreground_v1_nmf_dictionary_bank_labelbalanced_soft_v1"
 CANONICAL_SIZE = 20
 NUM_LABELS = 16
 IGNORE_INDEX = -100
@@ -24,7 +24,7 @@ DEFAULT_NMF_DICTIONARY_CONFIG: dict[str, Any] = {
     "beta_loss": "frobenius",
     "alpha_W": 0.001,
     "alpha_H": 0.001,
-    "l1_ratio": 0.7,
+    "l1_ratio": 0.5,
     "random_state": 0,
     "eps": 1.0e-8,
     "prune_percentile": 0.0,
@@ -36,7 +36,7 @@ DEFAULT_NMF_DICTIONARY_CONFIG: dict[str, Any] = {
         "enabled": True,
         "mode": "inverse_sqrt",
         "min_weight": 0.5,
-        "max_weight": 8.0,
+        "max_weight": 12.0,
         "eps": 1.0e-6,
     },
     "sample_normalize": {
@@ -49,17 +49,18 @@ DEFAULT_NMF_DICTIONARY_CONFIG: dict[str, Any] = {
         "mode": "per_label_mass_sqrt",
         "eps": 1.0e-6,
     },
-    "basis_unweight_after_fit": True,
+    "basis_unweight_after_fit": False,
     "basis_normalize_mass_max": True,
+    "support_basis_mode": "weighted",
     "sparsity": {
-        "alpha_W": 0.005,
+        "alpha_W": 0.001,
         "alpha_H": 0.001,
-        "l1_ratio": 0.85,
+        "l1_ratio": 0.5,
     },
     "prune": {
-        "enabled": True,
-        "percentile": 60,
-        "min_value": 1.0e-6,
+        "enabled": False,
+        "percentile": 0,
+        "min_value": 1.0e-8,
     },
     "anti_collapse": {
         "enabled": True,
@@ -252,6 +253,7 @@ def _basis_stats(
     label_prob_16: object,
     argmax_grid: list[list[int]],
     threshold: float,
+    eps: float,
 ) -> dict[str, object]:
     mass_grid = _as_float_grid(basis_mass, context=f"basis[{basis_index}].basis_label_mass")
     if hasattr(fg_mask_prob, "detach"):
@@ -324,9 +326,12 @@ def _basis_stats(
         motif2_entropy = -sum((count / motif_total) * math.log((count / motif_total) + 1e-12) for count in motif_counter.values())
     mass_values = [float(value) for row in mass_grid for value in row]
     fg_values = [float(value) for row in fg_grid for value in row]
+    basis_mass_sum = float(sum(mass_values))
+    active_mass_pixel_count = int(len(active_positions))
+    basis_empty = bool(basis_mass_sum <= float(eps) or active_mass_pixel_count == 0)
     return {
         "basis_index": int(basis_index),
-        "basis_mass_sum": float(sum(mass_values)),
+        "basis_mass_sum": basis_mass_sum,
         "basis_area_estimate": float(sum(1 for value in fg_values if value > float(threshold)) / float(CANONICAL_SIZE * CANONICAL_SIZE)),
         "label_hist_16": [float(value) for value in label_hist],
         "basis_dominant_label": int(dominant_label),
@@ -340,8 +345,9 @@ def _basis_stats(
         "motif2_entropy": float(motif2_entropy),
         "foreground_mass_mean": float(sum(fg_values) / float(max(1, len(fg_values)))),
         "foreground_mass_max": float(max(fg_values) if fg_values else 0.0),
-        "active_mass_pixel_count": int(len(active_positions)),
-        "empty_basis": bool(len(active_positions) == 0),
+        "active_mass_pixel_count": active_mass_pixel_count,
+        "basis_empty": basis_empty,
+        "empty_basis": basis_empty,
     }
 
 
@@ -404,7 +410,12 @@ def _anti_collapse_summary(basis_stats: list[dict[str, object]], config: dict[st
     max_dominant = float(anti_cf.get("max_basis_dominant_ratio_warn", 0.90))
     max_fraction = float(anti_cf.get("max_collapsed_basis_fraction_warn", 0.50))
     min_entropy = float(anti_cf.get("min_mean_label_entropy_warn", 0.40))
-    collapsed = [bool(row.get("empty_basis", False)) or bool(float(row.get("dominant_label_ratio_on_mass", 0.0)) > max_dominant) for row in basis_stats]
+    collapsed = [
+        bool(row.get("basis_empty", row.get("empty_basis", False)))
+        or bool(float(row.get("dominant_label_ratio_on_mass", 0.0)) > max_dominant)
+        or bool(float(row.get("label_entropy_on_mass", 0.0)) < min_entropy)
+        for row in basis_stats
+    ]
     for row, is_collapsed in zip(basis_stats, collapsed):
         row["basis_collapsed"] = bool(is_collapsed)
     collapsed_count = int(sum(1 for value in collapsed if value))
@@ -415,19 +426,25 @@ def _anti_collapse_summary(basis_stats: list[dict[str, object]], config: dict[st
         / float(max(1, len(basis_stats)))
     )
     warnings: list[str] = []
-    empty_count = int(sum(1 for row in basis_stats if bool(row.get("empty_basis", False))))
+    empty_count = int(sum(1 for row in basis_stats if bool(row.get("basis_empty", row.get("empty_basis", False)))))
+    empty_fraction = float(empty_count / float(max(1, len(basis_stats))))
+    label1_count = int(sum(1 for row in basis_stats if int(row.get("basis_dominant_label", 0)) == 1))
+    label1_fraction = float(label1_count / float(max(1, len(basis_stats))))
     if enabled and collapsed_fraction > max_fraction:
         warnings.append("NMF dictionary label collapse detected.")
     if enabled and mean_entropy < min_entropy:
         warnings.append("NMF dictionary mean label entropy is below threshold.")
     if enabled and empty_count > 0:
-        warnings.append("NMF dictionary has empty basis components after pruning.")
+        warnings.append("NMF dictionary has empty basis components.")
     return {
         "collapsed_basis_count": collapsed_count,
         "collapsed_basis_fraction": collapsed_fraction,
         "empty_basis_count": empty_count,
+        "empty_basis_fraction": empty_fraction,
         "mean_basis_label_entropy": mean_entropy,
         "mean_basis_dominant_ratio": mean_dominant,
+        "label1_dominant_basis_count": label1_count,
+        "label1_dominant_basis_fraction": label1_fraction,
         "anti_collapse_warnings": warnings,
         "anti_collapse_thresholds": {
             "max_basis_dominant_ratio_warn": max_dominant,
@@ -474,41 +491,78 @@ def build_dictionary_bank(items: list[dict[str, object]], config: dict[str, Any]
             )
             codes_h = model.fit_transform(x_c).astype(np.float32)
             basis_weighted = np.maximum(np.asarray(model.components_, dtype=np.float32).reshape(rank, NUM_LABELS, CANONICAL_SIZE, CANONICAL_SIZE), 0.0)
+            basis_for_label_prob = basis_weighted.astype(np.float32, copy=True)
             if bool(cfg.get("basis_unweight_after_fit", True)):
                 unweight_eps = float(cfg.get("eps", 1.0e-8))
-                basis = basis_weighted / np.maximum(label_weights[None, :, None, None], unweight_eps)
+                basis_support = basis_weighted / np.maximum(label_weights[None, :, None, None], unweight_eps)
+                basis_for_support_name = "unweighted"
             else:
-                basis = basis_weighted
-            basis = np.maximum(basis.astype(np.float32), 0.0)
+                support_mode = str(cfg.get("support_basis_mode", "weighted"))
+                if support_mode != "weighted":
+                    raise ValueError(f"Unsupported nmf_dictionary.support_basis_mode={support_mode!r}; expected 'weighted' when basis_unweight_after_fit=false.")
+                basis_support = basis_weighted
+                basis_for_support_name = "weighted"
+            basis_for_label_prob = np.maximum(basis_for_label_prob.astype(np.float32), 0.0)
+            basis_support = np.maximum(basis_support.astype(np.float32), 0.0)
             if bool(cfg.get("basis_normalize_mass_max", True)):
-                basis_mass_before_norm = basis.sum(axis=1)
-                basis_scale = basis_mass_before_norm.max(axis=(1, 2))
-                basis = np.where(basis_scale[:, None, None, None] > 0.0, basis / np.maximum(basis_scale[:, None, None, None], float(cfg.get("eps", 1.0e-8))), basis)
-            basis_before_prune = basis.copy()
+                label_mass_before_norm = basis_for_label_prob.sum(axis=1)
+                label_scale = label_mass_before_norm.max(axis=(1, 2))
+                support_mass_before_norm = basis_support.sum(axis=1)
+                support_scale = support_mass_before_norm.max(axis=(1, 2))
+                norm_eps = float(cfg.get("eps", 1.0e-8))
+                basis_for_label_prob = np.where(label_scale[:, None, None, None] > 0.0, basis_for_label_prob / np.maximum(label_scale[:, None, None, None], norm_eps), basis_for_label_prob)
+                basis_support = np.where(support_scale[:, None, None, None] > 0.0, basis_support / np.maximum(support_scale[:, None, None, None], norm_eps), basis_support)
+            basis_label_before_prune = basis_for_label_prob.copy()
+            basis_support_before_prune = basis_support.copy()
             prune_cf = cfg.get("prune", {}) if isinstance(cfg.get("prune"), dict) else {}
             prune_enabled = bool(prune_cf.get("enabled", False))
             prune_percentile = float(prune_cf.get("percentile", cfg.get("prune_percentile", 0.0)))
             prune_min_value = float(prune_cf.get("min_value", 0.0))
             if prune_enabled and prune_min_value > 0.0:
-                basis[basis < prune_min_value] = 0.0
+                basis_for_label_prob[basis_for_label_prob < prune_min_value] = 0.0
+                basis_support[basis_support < prune_min_value] = 0.0
             if (prune_enabled or prune_percentile > 0.0) and prune_percentile > 0.0:
-                for basis_index in range(rank):
-                    for label_index in range(NUM_LABELS):
-                        channel = basis[basis_index, label_index]
-                        positive = channel[channel > 0.0]
-                        if positive.size:
-                            threshold = float(np.percentile(positive, prune_percentile))
-                            channel[channel < threshold] = 0.0
+                for target_basis in (basis_for_label_prob, basis_support):
+                    for basis_index in range(rank):
+                        for label_index in range(NUM_LABELS):
+                            channel = target_basis[basis_index, label_index]
+                            positive = channel[channel > 0.0]
+                            if positive.size:
+                                threshold = float(np.percentile(positive, prune_percentile))
+                                channel[channel < threshold] = 0.0
+            if prune_enabled:
+                label_empty_after_prune = [
+                    basis_index
+                    for basis_index in range(rank)
+                    if float(basis_for_label_prob[basis_index].sum()) <= 0.0 and float(basis_label_before_prune[basis_index].sum()) > 0.0
+                ]
+                support_empty_after_prune = [
+                    basis_index
+                    for basis_index in range(rank)
+                    if float(basis_support[basis_index].sum()) <= 0.0 and float(basis_support_before_prune[basis_index].sum()) > 0.0
+                ]
+                if label_empty_after_prune or support_empty_after_prune:
+                    basis_for_label_prob = basis_label_before_prune.copy()
+                    basis_support = basis_support_before_prune.copy()
+                    prune_auto_disabled = True
+                else:
+                    prune_auto_disabled = False
+            else:
+                prune_auto_disabled = False
             prune_empty_restored_count = 0
             for basis_index in range(rank):
-                if float(basis[basis_index].sum()) <= 0.0 and float(basis_before_prune[basis_index].sum()) > 0.0:
-                    basis[basis_index] = basis_before_prune[basis_index]
+                if float(basis_for_label_prob[basis_index].sum()) <= 0.0 and float(basis_label_before_prune[basis_index].sum()) > 0.0:
+                    basis_for_label_prob[basis_index] = basis_label_before_prune[basis_index]
                     prune_empty_restored_count += 1
-            basis_mass = basis.sum(axis=1).astype(np.float32)
+                if float(basis_support[basis_index].sum()) <= 0.0 and float(basis_support_before_prune[basis_index].sum()) > 0.0:
+                    basis_support[basis_index] = basis_support_before_prune[basis_index]
+                    prune_empty_restored_count += 1
+            basis_mass = basis_support.sum(axis=1).astype(np.float32)
+            label_mass = basis_for_label_prob.sum(axis=1).astype(np.float32)
             eps = float(cfg.get("eps", 1.0e-8))
             gamma_fg = float(cfg.get("gamma_fg", 1.0))
             fg_mask_prob = (1.0 - np.exp(-gamma_fg * basis_mass)).astype(np.float32)[:, None, :, :]
-            label_prob_16 = ((basis + eps) / (basis_mass[:, None, :, :] + (NUM_LABELS * eps))).astype(np.float32)
+            label_prob_16 = ((basis_for_label_prob + eps) / (label_mass[:, None, :, :] + (NUM_LABELS * eps))).astype(np.float32)
             if bool(cfg.get("save_basis_float16", False)):
                 tensor_dtype = getattr(torch, "float16")
             else:
@@ -536,6 +590,7 @@ def build_dictionary_bank(items: list[dict[str, object]], config: dict[str, Any]
                         label_prob_16=label_prob_tensor[basis_index],
                         argmax_grid=argmax_grid,
                         threshold=stats_threshold,
+                        eps=eps,
                     )
                 )
             collapse_summary = _anti_collapse_summary(basis_stats, cfg)
@@ -552,6 +607,8 @@ def build_dictionary_bank(items: list[dict[str, object]], config: dict[str, Any]
                 "basis_label_argmax": basis_argmax,
                 "basis_label_mass": mass_tensor,
                 "basis_stats": basis_stats,
+                "basis_for_label_prob": "weighted",
+                "basis_for_support": basis_for_support_name,
                 "label_weights_16": [float(value) for value in label_weights.tolist()],
                 "label_freq_16": [float(value) for value in label_freq.tolist()],
                 "feature_mode": str(cfg.get("feature_mode", "label_balanced_onehot")),
@@ -561,14 +618,21 @@ def build_dictionary_bank(items: list[dict[str, object]], config: dict[str, Any]
                     "channel_normalize": cfg.get("channel_normalize", {}),
                     "basis_unweight_after_fit": bool(cfg.get("basis_unweight_after_fit", True)),
                     "basis_normalize_mass_max": bool(cfg.get("basis_normalize_mass_max", True)),
+                    "support_basis_mode": str(cfg.get("support_basis_mode", "weighted")),
                     "sparsity": cfg.get("sparsity", {}),
                     "prune": cfg.get("prune", {}),
                     "prune_empty_restored_count": int(prune_empty_restored_count),
+                    "prune_auto_disabled": bool(prune_auto_disabled),
                 },
                 "collapse_summary": collapse_summary,
                 "sample_ids": sample_ids,
                 "sample_to_basis_argmax": {sample_id: int(np.argmax(codes_h[index]).item()) for index, sample_id in enumerate(sample_ids)},
                 "code_mode": code_mode,
+                "code_mode_summary": {
+                    "mode_count": code_mode.get("mode_count", 0),
+                    "mode_weights": code_mode.get("mode_weights", []),
+                    "mode_num_samples": code_mode.get("mode_num_samples", []),
+                },
             }
             if bool(cfg.get("save_sample_codes", True)):
                 category_payload["codes_H"] = torch.tensor(codes_h, dtype=getattr(torch, "float32"))
@@ -633,6 +697,9 @@ def inspect_dictionary_bank_category(
     if hasattr(fg_prob, "detach"):
         fg_prob = fg_prob.detach().cpu()
     rank = int(entry.get("rank", len(label_prob)))
+    schema_version = dictionary_bank.get("schema_version")
+    if schema_version != DICTIONARY_BANK_SCHEMA_VERSION:
+        print(f"WARNING dictionary_bank schema_version={schema_version!r}; expected {DICTIONARY_BANK_SCHEMA_VERSION!r}.", flush=True)
     max_tiles = min(rank, max(1, int(num_basis_samples)))
     argmax_tiles = []
     mass_tiles = []
@@ -676,6 +743,8 @@ def inspect_dictionary_bank_category(
             "rank": int(entry.get("rank", 0)),
             "num_samples": int(entry.get("num_samples", 0)),
             "feature_mode": entry.get("feature_mode"),
+            "basis_for_label_prob": entry.get("basis_for_label_prob"),
+            "basis_for_support": entry.get("basis_for_support"),
             "label_weights_16": entry.get("label_weights_16", []),
             "label_freq_16": entry.get("label_freq_16", []),
             "normalization_config": entry.get("normalization_config", {}),

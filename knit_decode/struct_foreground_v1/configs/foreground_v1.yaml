@@ -54,7 +54,7 @@ nmf_dictionary:
   beta_loss: frobenius
   alpha_W: 0.001
   alpha_H: 0.001
-  l1_ratio: 0.7
+  l1_ratio: 0.5
   random_state: 0
   eps: 1.0e-8
   prune_percentile: 0.0
@@ -66,7 +66,7 @@ nmf_dictionary:
     enabled: true
     mode: inverse_sqrt
     min_weight: 0.5
-    max_weight: 8.0
+    max_weight: 12.0
     eps: 1.0e-6
   sample_normalize:
     enabled: true
@@ -76,16 +76,16 @@ nmf_dictionary:
     enabled: true
     mode: per_label_mass_sqrt
     eps: 1.0e-6
-  basis_unweight_after_fit: true
+  basis_unweight_after_fit: false
   basis_normalize_mass_max: true
   sparsity:
-    alpha_W: 0.005
+    alpha_W: 0.001
     alpha_H: 0.001
-    l1_ratio: 0.85
+    l1_ratio: 0.5
   prune:
-    enabled: true
-    percentile: 60
-    min_value: 1.0e-6
+    enabled: false
+    percentile: 0
+    min_value: 1.0e-8
   anti_collapse:
     enabled: true
     max_basis_dominant_ratio_warn: 0.90
