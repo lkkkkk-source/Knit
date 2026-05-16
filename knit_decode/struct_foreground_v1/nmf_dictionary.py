@@ -6,7 +6,7 @@ from collections import Counter
 from typing import Any
 
 
-DICTIONARY_BANK_SCHEMA_VERSION = "foreground_v1_nmf_dual_dictionary_v1"
+DICTIONARY_BANK_SCHEMA_VERSION = "foreground_v1_nmf_dual_dictionary_matched_v1"
 CANONICAL_SIZE = 20
 NUM_LABELS = 16
 IGNORE_INDEX = -100
@@ -69,6 +69,9 @@ DEFAULT_NMF_DICTIONARY_CONFIG: dict[str, Any] = {
         "enabled": True,
         "use_category_stats": True,
         "min_effective_rank": 2,
+        "min_effective_rank_ratio": 0.5,
+        "max_collapsed_fraction_default": 0.5,
+        "max_support_empty_basis_fraction": 0.5,
         "allow_low_label_entropy_if_category_low_entropy": True,
         "allow_low_diversity_if_category_low_diversity": True,
     },
@@ -337,6 +340,77 @@ def _normalize_component_mass(components: object, np: object, eps: float) -> obj
     flat = components.reshape(components.shape[0], -1)
     scale = flat.max(axis=1)
     return np.where(scale.reshape(-1, *([1] * (components.ndim - 1))) > 0.0, components / np.maximum(scale.reshape(-1, *([1] * (components.ndim - 1))), eps), components)
+
+
+def _normalize_mass_for_matching(mass: object, np: object, eps: float) -> object:
+    arr = np.maximum(np.asarray(mass, dtype=np.float32), 0.0)
+    flat = arr.reshape(arr.shape[0], -1)
+    total = flat.sum(axis=1)
+    return np.where(total[:, None] > eps, flat / np.maximum(total[:, None], eps), flat)
+
+
+def _support_label_overlap_matrix(support_mass: object, label_mass: object, np: object, eps: float) -> object:
+    support = _normalize_mass_for_matching(support_mass, np, eps)
+    labels = _normalize_mass_for_matching(label_mass, np, eps)
+    support_norm = np.linalg.norm(support, axis=1)
+    label_norm = np.linalg.norm(labels, axis=1)
+    dot = support @ labels.T
+    cosine = dot / np.maximum(support_norm[:, None] * label_norm[None, :], eps)
+    minimum = np.minimum(support[:, None, :], labels[None, :, :]).sum(axis=2)
+    maximum = np.maximum(support[:, None, :], labels[None, :, :]).sum(axis=2)
+    soft_iou = minimum / np.maximum(maximum, eps)
+    return (0.5 * cosine + 0.5 * soft_iou).astype(np.float32)
+
+
+def _linear_sum_assignment_max(score_matrix: object, np: object) -> tuple[list[int], str]:
+    matrix = np.asarray(score_matrix, dtype=np.float32)
+    rank = int(matrix.shape[0])
+    try:
+        scipy_optimize = importlib.import_module("scipy.optimize")
+        row_ind, col_ind = scipy_optimize.linear_sum_assignment(-matrix)
+        assignment = [-1 for _ in range(rank)]
+        for row, col in zip(row_ind.tolist(), col_ind.tolist()):
+            assignment[int(row)] = int(col)
+        if any(value < 0 for value in assignment):
+            raise ValueError("linear_sum_assignment returned incomplete assignment")
+        return assignment, "scipy_linear_sum_assignment"
+    except Exception:
+        remaining = set(range(int(matrix.shape[1])))
+        assignment = [-1 for _ in range(rank)]
+        for row in range(rank):
+            if not remaining:
+                break
+            best_col = max(remaining, key=lambda col: float(matrix[row, col]))
+            assignment[row] = int(best_col)
+            remaining.remove(best_col)
+        if any(value < 0 for value in assignment):
+            for row in range(rank):
+                if assignment[row] < 0:
+                    assignment[row] = int(row % max(1, int(matrix.shape[1])))
+        return assignment, "greedy_fallback_no_scipy"
+
+
+def _match_support_label_bases(support_mass: object, label_component_mass: object, np: object, eps: float, *, low_overlap_threshold: float = 0.05) -> dict[str, object]:
+    overlap_matrix = _support_label_overlap_matrix(support_mass, label_component_mass, np, eps)
+    assignment, method = _linear_sum_assignment_max(overlap_matrix, np)
+    matched_scores = [float(overlap_matrix[row, int(col)]) for row, col in enumerate(assignment)]
+    low_indices = [int(index) for index, value in enumerate(matched_scores) if float(value) < float(low_overlap_threshold)]
+    warnings: list[str] = []
+    if method.startswith("greedy"):
+        warnings.append("scipy.optimize.linear_sum_assignment unavailable; used greedy support-label matching")
+    if low_indices:
+        warnings.append("low matched support-label overlap detected")
+    return {
+        "assignment": [int(value) for value in assignment],
+        "overlap_matrix": [[float(value) for value in row] for row in overlap_matrix.tolist()],
+        "matched_overlap_scores": matched_scores,
+        "mean_matched_overlap": float(sum(matched_scores) / max(1, len(matched_scores))),
+        "min_matched_overlap": float(min(matched_scores) if matched_scores else 0.0),
+        "low_overlap_basis_indices": low_indices,
+        "low_overlap_basis_count": int(len(low_indices)),
+        "matching_method": method,
+        "warnings": warnings,
+    }
 
 
 def _component_count_and_largest(mask_grid: list[list[int]]) -> tuple[int, float]:
@@ -651,17 +725,31 @@ def _anti_collapse_summary(basis_stats: list[dict[str, object]], config: dict[st
 
 def _quality_summary(categories: dict[str, dict[str, object]]) -> dict[str, object]:
     unusable = [category for category, entry in categories.items() if isinstance(entry, dict) and not bool(entry.get("quality_report", {}).get("dictionary_usable", False))]
+    usable = [category for category, entry in categories.items() if isinstance(entry, dict) and bool(entry.get("quality_report", {}).get("dictionary_usable", False))]
     warnings_by_category = {
         category: entry.get("quality_report", {}).get("warnings", [])
         for category, entry in categories.items()
         if isinstance(entry, dict) and entry.get("quality_report", {}).get("warnings")
     }
+    unusable_reasons_by_category = {
+        category: entry.get("quality_report", {}).get("unusable_reasons", [])
+        for category, entry in categories.items()
+        if isinstance(entry, dict) and entry.get("quality_report", {}).get("unusable_reasons")
+    }
+    mean_matched_overlap_by_category = {
+        category: float(entry.get("quality_report", {}).get("mean_matched_overlap", 0.0))
+        for category, entry in categories.items()
+        if isinstance(entry, dict)
+    }
     return {
         "categories_total": int(len(categories)),
-        "categories_usable": int(len(categories) - len(unusable)),
+        "categories_usable": int(len(usable)),
         "categories_unusable": int(len(unusable)),
+        "usable_categories": sorted(usable),
         "unusable_categories": sorted(unusable),
         "warnings_by_category": warnings_by_category,
+        "unusable_reasons_by_category": unusable_reasons_by_category,
+        "mean_matched_overlap_by_category": mean_matched_overlap_by_category,
     }
 
 
@@ -717,48 +805,88 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
             label_components = _normalize_component_mass(label_components, np, eps)
             label_component_mass = label_components.sum(axis=1).astype(np.float32)
             label_prob_16 = ((label_components + eps) / (label_component_mass[:, None, :, :] + (NUM_LABELS * eps))).astype(np.float32)
+            match_info = _match_support_label_bases(
+                support_mass,
+                label_component_mass,
+                np,
+                eps,
+                low_overlap_threshold=float(fusion_cf.get("low_overlap_threshold", 0.05)),
+            )
+            support_label_assignment = [int(value) for value in match_info["assignment"]]
+            assignment_np = np.asarray(support_label_assignment, dtype=np.int64)
+            matched_label_components = label_components[assignment_np]
+            matched_label_component_mass = label_component_mass[assignment_np]
+            matched_label_prob_16 = label_prob_16[assignment_np]
+            matched_label_codes = label_codes[:, assignment_np]
 
             support_threshold = float(fusion_cf.get("support_mass_threshold", 0.05))
-            max_label_prob = label_prob_16.max(axis=1).astype(np.float32)
+            matched_label_confidence = matched_label_prob_16.max(axis=1).astype(np.float32)
             if bool(fusion_cf.get("label_mass_mask_from_support", True)):
-                basis_label_mass = (support_mass * max_label_prob).astype(np.float32)
+                basis_label_mass = (support_mass * matched_label_confidence).astype(np.float32)
             else:
-                basis_label_mass = label_component_mass.astype(np.float32)
-            argmax_raw = label_prob_16.argmax(axis=1).astype(np.int64) + 1
+                basis_label_mass = (support_mass * matched_label_component_mass).astype(np.float32)
+            argmax_raw = matched_label_prob_16.argmax(axis=1).astype(np.int64) + 1
             basis_label_argmax = np.where(support_mass > support_threshold, argmax_raw, 0).astype(np.int64)
+            raw_label_basis_argmax = label_prob_16.argmax(axis=1).astype(np.int64)
+            matched_label_basis_argmax = matched_label_prob_16.argmax(axis=1).astype(np.int64)
 
             min_active = int(support_cf.get("min_active_pixels", 8))
             support_stats = [_support_stats_for_component(support_mass[index], threshold=support_threshold, min_active_pixels=min_active, np=np) for index in range(rank)]
-            label_stats: list[dict[str, object]] = []
+            raw_label_stats: list[dict[str, object]] = []
+            matched_label_stats: list[dict[str, object]] = []
             basis_stats: list[dict[str, object]] = []
             category_stats = _category_label_stats(samples)
-            allow_low_entropy = bool(adaptive_cf.get("allow_low_label_entropy_if_category_low_entropy", True)) and bool(category_stats.get("low_entropy_category", False))
+            allow_low_entropy = bool(cfg.get("allow_low_label_entropy", False)) or (bool(adaptive_cf.get("allow_low_label_entropy_if_category_low_entropy", True)) and bool(category_stats.get("low_entropy_category", False)))
             allow_low_diversity = bool(adaptive_cf.get("allow_low_diversity_if_category_low_diversity", True)) and bool(category_stats.get("low_diversity_category", False))
-            allow_single_label = bool(anti_cf.get("allow_single_label", False)) or allow_low_entropy or allow_low_diversity
+            allow_single_label = bool(anti_cf.get("allow_single_label", False)) or bool(cfg.get("allow_high_label1_fraction", False)) or allow_low_entropy or allow_low_diversity
             max_dominant = float(anti_cf.get("max_basis_dominant_ratio_warn", 0.90))
             min_entropy = float(anti_cf.get("min_mean_label_entropy_warn", 0.40))
             dropped_empty: list[int] = []
             dropped_collapsed: list[int] = []
-            overlap_values: list[float] = []
+            overlap_values = [float(value) for value in match_info["matched_overlap_scores"]]
+            for label_index in range(rank):
+                raw_argmax_grid = [[int(raw_label_basis_argmax[label_index, y_pos, x_pos] + 1) for x_pos in range(CANONICAL_SIZE)] for y_pos in range(CANONICAL_SIZE)]
+                raw_stat = _basis_stats(
+                    basis_index=label_index,
+                    basis_mass=label_component_mass[label_index],
+                    fg_mask_prob=label_component_mass[label_index],
+                    label_prob_16=label_prob_16[label_index],
+                    argmax_grid=raw_argmax_grid,
+                    threshold=support_threshold,
+                    eps=eps,
+                )
+                raw_label_stats.append(
+                    {
+                        "basis_index": label_index,
+                        "label_basis_entropy": raw_stat["basis_label_entropy_on_mass"],
+                        "label_basis_dominant_label": raw_stat["basis_dominant_label"],
+                        "label_basis_dominant_ratio": raw_stat["basis_dominant_label_ratio_on_mass"],
+                        "label1_dominant": bool(int(raw_stat["basis_dominant_label"]) == 1),
+                        "label_empty": bool(float(label_component_mass[label_index].sum()) <= eps),
+                    }
+                )
             for basis_index in range(rank):
                 label_argmax = [[int(basis_label_argmax[basis_index, y_pos, x_pos]) for x_pos in range(CANONICAL_SIZE)] for y_pos in range(CANONICAL_SIZE)]
                 stat = _basis_stats(
                     basis_index=basis_index,
                     basis_mass=basis_label_mass[basis_index],
                     fg_mask_prob=basis_fg_mask_prob[basis_index],
-                    label_prob_16=label_prob_16[basis_index],
+                    label_prob_16=matched_label_prob_16[basis_index],
                     argmax_grid=label_argmax,
                     threshold=support_threshold,
                     eps=eps,
                 )
                 support_empty = bool(support_stats[basis_index]["support_empty"])
-                label_empty = bool(float(label_component_mass[basis_index].sum()) <= eps)
+                matched_label_index = int(support_label_assignment[basis_index])
+                label_empty = bool(float(matched_label_component_mass[basis_index].sum()) <= eps)
                 label_collapsed = (not allow_single_label) and (
                     float(stat["basis_dominant_label_ratio_on_mass"]) > max_dominant or float(stat["basis_label_entropy_on_mass"]) < min_entropy
                 )
                 stat.update(
                     {
                         **support_stats[basis_index],
+                        "matched_label_basis_index": matched_label_index,
+                        "matched_label_overlap": float(overlap_values[basis_index]),
                         "label_basis_entropy": float(stat["basis_label_entropy_on_mass"]),
                         "label_basis_dominant_label": int(stat["basis_dominant_label"]),
                         "label_basis_dominant_ratio": float(stat["basis_dominant_label_ratio_on_mass"]),
@@ -769,21 +897,18 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
                         "basis_collapsed": bool(support_empty or label_empty or label_collapsed),
                     }
                 )
-                support_flat = support_mass[basis_index].reshape(-1)
-                label_flat = label_component_mass[basis_index].reshape(-1)
-                denom = float(np.linalg.norm(support_flat) * np.linalg.norm(label_flat))
-                overlap = float(np.dot(support_flat, label_flat) / denom) if denom > eps else 0.0
-                stat["support_label_overlap"] = overlap
-                overlap_values.append(overlap)
+                stat["support_label_overlap"] = float(overlap_values[basis_index])
                 basis_stats.append(stat)
-                label_stats.append(
+                matched_label_stats.append(
                     {
                         "basis_index": basis_index,
+                        "matched_label_basis_index": matched_label_index,
                         "label_basis_entropy": stat["label_basis_entropy"],
                         "label_basis_dominant_label": stat["label_basis_dominant_label"],
                         "label_basis_dominant_ratio": stat["label_basis_dominant_ratio"],
                         "label1_dominant": stat["label1_dominant"],
                         "label_empty": stat["label_empty"],
+                        "matched_label_overlap": float(overlap_values[basis_index]),
                     }
                 )
                 if stat["basis_empty"]:
@@ -792,29 +917,56 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
                     dropped_collapsed.append(basis_index)
             effective_indices = [index for index, stat in enumerate(basis_stats) if not bool(stat["basis_empty"])]
             min_effective_rank = int(adaptive_cf.get("min_effective_rank", 2))
-            dictionary_usable = bool(len(effective_indices) >= min_effective_rank)
-            if not effective_indices:
-                effective_indices = list(range(rank))
+            min_effective_rank_ratio = float(cfg.get("min_effective_rank_ratio", adaptive_cf.get("min_effective_rank_ratio", 0.5)))
+            max_collapsed_fraction = float(cfg.get("max_collapsed_fraction_default", adaptive_cf.get("max_collapsed_fraction_default", 0.5)))
+            max_support_empty_fraction = float(cfg.get("max_support_empty_basis_fraction", adaptive_cf.get("max_support_empty_basis_fraction", 0.5)))
+            allow_low_effective_rank = bool(cfg.get("allow_low_effective_rank", adaptive_cf.get("allow_low_effective_rank", False)))
             effective_rank = len(effective_indices)
+            effective_rank_ratio = float(effective_rank / max(1, rank))
             support_empty_count = sum(1 for stat in basis_stats if bool(stat.get("support_empty")))
             label_empty_count = sum(1 for stat in basis_stats if bool(stat.get("label_empty")))
             collapsed_count = sum(1 for stat in basis_stats if bool(stat.get("basis_collapsed")))
+            support_empty_fraction = float(support_empty_count / max(1, rank))
+            label_empty_fraction = float(label_empty_count / max(1, rank))
+            collapsed_fraction = float(collapsed_count / max(1, rank))
+            unusable_reasons: list[str] = []
+            if effective_rank < min_effective_rank:
+                unusable_reasons.append(f"effective_rank_below_min:{effective_rank}<{min_effective_rank}")
+            if not allow_low_effective_rank and effective_rank_ratio < min_effective_rank_ratio:
+                unusable_reasons.append(f"effective_rank_ratio_below_min:{effective_rank_ratio:.4f}<{min_effective_rank_ratio:.4f}")
+            if support_empty_fraction > max_support_empty_fraction:
+                unusable_reasons.append(f"support_empty_basis_fraction_high:{support_empty_fraction:.4f}>{max_support_empty_fraction:.4f}")
+            if (not allow_single_label) and collapsed_fraction > max_collapsed_fraction:
+                unusable_reasons.append(f"collapsed_basis_fraction_high:{collapsed_fraction:.4f}>{max_collapsed_fraction:.4f}")
+            dictionary_usable = bool(not unusable_reasons)
             warnings: list[str] = []
             if not dictionary_usable:
-                warnings.append("dictionary effective rank below minimum")
+                warnings.append("dictionary unusable: " + "; ".join(unusable_reasons))
             if collapsed_count:
                 warnings.append(f"collapsed_basis_count={collapsed_count}")
-            if any(value < 0.05 for value in overlap_values):
-                warnings.append("low support-label overlap detected")
-            basis_stats_eff = [basis_stats[index] for index in effective_indices]
+            warnings.extend(str(value) for value in match_info.get("warnings", []))
+            selected_indices = effective_indices if effective_indices else list(range(rank))
+            basis_stats_eff = [basis_stats[index] for index in selected_indices]
             quality_report = {
                 "requested_rank": int(rank),
                 "effective_rank": int(effective_rank),
+                "effective_rank_ratio": float(effective_rank_ratio),
                 "dictionary_usable": bool(dictionary_usable),
+                "unusable_reasons": unusable_reasons,
                 "support_empty_basis_count": int(support_empty_count),
+                "support_empty_basis_fraction": float(support_empty_fraction),
                 "label_empty_basis_count": int(label_empty_count),
+                "label_empty_basis_fraction": float(label_empty_fraction),
                 "collapsed_basis_count": int(collapsed_count),
-                "collapsed_basis_fraction": float(collapsed_count / max(1, rank)),
+                "collapsed_basis_fraction": float(collapsed_fraction),
+                "support_label_assignment": [int(value) for value in support_label_assignment],
+                "matched_label_basis_indices": [int(support_label_assignment[index]) for index in selected_indices],
+                "matched_overlap_scores": [float(value) for value in overlap_values],
+                "mean_matched_overlap": float(match_info["mean_matched_overlap"]),
+                "min_matched_overlap": float(match_info["min_matched_overlap"]),
+                "low_overlap_basis_indices": [int(value) for value in match_info["low_overlap_basis_indices"]],
+                "low_overlap_basis_count": int(match_info["low_overlap_basis_count"]),
+                "matching_method": str(match_info["matching_method"]),
                 "mean_support_area": float(sum(float(stat["support_area_estimate"]) for stat in basis_stats) / max(1, rank)),
                 "mean_support_active_pixels": float(sum(float(stat["support_active_pixel_count"]) for stat in basis_stats) / max(1, rank)),
                 "mean_support_largest_component_ratio": float(sum(float(stat["support_largest_component_ratio"]) for stat in basis_stats) / max(1, rank)),
@@ -825,9 +977,9 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
                 "allow_single_label": bool(allow_single_label),
                 "warnings": warnings,
             }
-            eff = np.asarray(effective_indices, dtype=np.int64)
+            eff = np.asarray(selected_indices, dtype=np.int64)
             support_codes_eff = support_codes[:, eff]
-            label_codes_eff = label_codes[:, eff]
+            label_codes_eff = matched_label_codes[:, eff]
             code_mode = _build_code_modes(category, label_codes_eff, cfg)
             assigned = code_mode.pop("_assigned")
             code_mode["sample_to_code_mode"] = {sample_id: int(mode_index) for sample_id, mode_index in zip(sample_ids, assigned)}
@@ -835,21 +987,30 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
             category_payload: dict[str, object] = {
                 "num_samples": int(len(samples)),
                 "requested_rank": int(rank),
-                "rank": int(effective_rank),
+                "rank": int(len(selected_indices)),
                 "effective_rank": int(effective_rank),
                 "effective_basis_indices": [int(index) for index in effective_indices],
                 "dropped_empty_basis_indices": [int(index) for index in dropped_empty],
                 "dropped_collapsed_basis_indices": [int(index) for index in dropped_collapsed],
                 "dictionary_usable": bool(dictionary_usable),
-                "basis_label_prob_16": torch.tensor(label_prob_16[eff], dtype=tensor_dtype),
+                "basis_label_prob_16": torch.tensor(matched_label_prob_16[eff], dtype=tensor_dtype),
                 "basis_fg_mask_prob": torch.tensor(basis_fg_mask_prob[eff], dtype=tensor_dtype),
                 "basis_label_argmax": basis_label_argmax[eff].tolist(),
                 "basis_label_mass": torch.tensor(basis_label_mass[eff], dtype=tensor_dtype),
                 "support_basis_mass": torch.tensor(support_mass[eff], dtype=tensor_dtype),
-                "label_basis_argmax": label_prob_16[eff].argmax(axis=1).astype(np.int64).tolist(),
+                "label_basis_argmax": raw_label_basis_argmax[eff].astype(np.int64).tolist(),
+                "matched_label_basis_argmax": matched_label_basis_argmax[eff].astype(np.int64).tolist(),
+                "support_label_assignment": [int(value) for value in support_label_assignment],
+                "support_label_overlap_matrix": match_info["overlap_matrix"],
+                "matched_overlap_scores": [float(value) for value in match_info["matched_overlap_scores"]],
+                "mean_matched_overlap": float(match_info["mean_matched_overlap"]),
+                "min_matched_overlap": float(match_info["min_matched_overlap"]),
+                "low_overlap_basis_indices": [int(value) for value in match_info["low_overlap_basis_indices"]],
+                "matching_method": str(match_info["matching_method"]),
                 "basis_stats": basis_stats_eff,
-                "support_basis_stats": [support_stats[index] for index in effective_indices],
-                "label_basis_stats": [label_stats[index] for index in effective_indices],
+                "support_basis_stats": [support_stats[index] for index in selected_indices],
+                "label_basis_stats": [raw_label_stats[index] for index in selected_indices],
+                "matched_label_basis_stats": [matched_label_stats[index] for index in selected_indices],
                 "quality_report": quality_report,
                 "label_weights_16": [float(value) for value in label_weights.tolist()],
                 "label_freq_16": [float(value) for value in label_freq.tolist()],
@@ -1089,10 +1250,10 @@ def build_dictionary_bank(items: list[dict[str, object]], config: dict[str, Any]
 
 def dictionary_bank_summary(dictionary_bank: object) -> dict[str, object]:
     if not isinstance(dictionary_bank, dict):
-        return {"enabled": False, "schema_version": None, "categories": [], "usable_categories": [], "unusable_categories": [], "total_nmf_basis": 0, "total_effective_basis": 0, "warnings_by_category": {}}
+        return {"enabled": False, "schema_version": None, "categories": [], "usable_categories": [], "unusable_categories": [], "total_nmf_basis": 0, "total_effective_basis": 0, "warnings_by_category": {}, "unusable_reasons_by_category": {}, "mean_matched_overlap_by_category": {}}
     categories = dictionary_bank.get("categories", {})
     if not isinstance(categories, dict):
-        return {"enabled": bool(dictionary_bank.get("enabled", False)), "schema_version": dictionary_bank.get("schema_version"), "categories": [], "usable_categories": [], "unusable_categories": [], "total_nmf_basis": 0, "total_effective_basis": 0, "warnings_by_category": {}}
+        return {"enabled": bool(dictionary_bank.get("enabled", False)), "schema_version": dictionary_bank.get("schema_version"), "categories": [], "usable_categories": [], "unusable_categories": [], "total_nmf_basis": 0, "total_effective_basis": 0, "warnings_by_category": {}, "unusable_reasons_by_category": {}, "mean_matched_overlap_by_category": {}}
     unusable = []
     usable = []
     for category, entry in categories.items():
@@ -1110,6 +1271,8 @@ def dictionary_bank_summary(dictionary_bank: object) -> dict[str, object]:
         "total_nmf_basis": int(sum(int(entry.get("rank", 0)) for entry in categories.values() if isinstance(entry, dict))),
         "total_effective_basis": int(sum(int(entry.get("effective_rank", entry.get("rank", 0))) for entry in categories.values() if isinstance(entry, dict))),
         "warnings_by_category": quality_summary.get("warnings_by_category", {}),
+        "unusable_reasons_by_category": quality_summary.get("unusable_reasons_by_category", {}),
+        "mean_matched_overlap_by_category": quality_summary.get("mean_matched_overlap_by_category", {}),
     }
 
 
@@ -1154,6 +1317,9 @@ def inspect_dictionary_bank_category(
     label_argmax = entry.get("label_basis_argmax")
     if hasattr(label_argmax, "detach"):
         label_argmax = label_argmax.detach().cpu()
+    matched_label_argmax = entry.get("matched_label_basis_argmax")
+    if hasattr(matched_label_argmax, "detach"):
+        matched_label_argmax = matched_label_argmax.detach().cpu()
     rank = int(entry.get("rank", len(label_prob)))
     schema_version = dictionary_bank.get("schema_version")
     if schema_version != DICTIONARY_BANK_SCHEMA_VERSION:
@@ -1164,6 +1330,7 @@ def inspect_dictionary_bank_category(
     confidence_tiles = []
     support_tiles = []
     label_argmax_tiles = []
+    matched_label_argmax_tiles = []
     labels = []
     basis_rows: list[dict[str, object]] = []
     for basis_index in range(max_tiles):
@@ -1175,11 +1342,17 @@ def inspect_dictionary_bank_category(
             label_grid = [[int(label_grid_value[basis_index][y_pos][x_pos]) + 1 if int(label_grid_value[basis_index][y_pos][x_pos]) >= 0 else 0 for x_pos in range(CANONICAL_SIZE)] for y_pos in range(CANONICAL_SIZE)]
         else:
             label_grid = argmax_grid
+        if matched_label_argmax is not None:
+            matched_label_grid_value = matched_label_argmax.tolist() if hasattr(matched_label_argmax, "tolist") else matched_label_argmax
+            matched_label_grid = [[int(matched_label_grid_value[basis_index][y_pos][x_pos]) + 1 if int(matched_label_grid_value[basis_index][y_pos][x_pos]) >= 0 else 0 for x_pos in range(CANONICAL_SIZE)] for y_pos in range(CANONICAL_SIZE)]
+        else:
+            matched_label_grid = argmax_grid
         argmax_tiles.append(grid_to_rgb(argmax_grid, mode="label"))
         mass_tiles.append(prob_grid_to_rgb(mass_grid))
         confidence_tiles.append(prob_grid_to_rgb(confidence_grid))
         support_tiles.append(prob_grid_to_rgb(support_grid))
         label_argmax_tiles.append(grid_to_rgb(label_grid, mode="label"))
+        matched_label_argmax_tiles.append(grid_to_rgb(matched_label_grid, mode="label"))
         labels.append(f"k={basis_index}")
         basis_rows.append(
             {
@@ -1196,6 +1369,7 @@ def inspect_dictionary_bank_category(
     output_path = Path(output_dir)
     save_tiled_grid(support_tiles, labels, output_path / f"{category}_nmf_support_basis_mass_grid.png", cols=int(cols), cell_size=int(cell_size))
     save_tiled_grid(label_argmax_tiles, labels, output_path / f"{category}_nmf_label_basis_argmax_grid.png", cols=int(cols), cell_size=int(cell_size))
+    save_tiled_grid(matched_label_argmax_tiles, labels, output_path / f"{category}_nmf_matched_label_basis_argmax_grid.png", cols=int(cols), cell_size=int(cell_size))
     save_tiled_grid(argmax_tiles, labels, output_path / f"{category}_nmf_fused_basis_argmax_grid.png", cols=int(cols), cell_size=int(cell_size))
     save_tiled_grid(mass_tiles, labels, output_path / f"{category}_nmf_fused_basis_mass_grid.png", cols=int(cols), cell_size=int(cell_size))
     save_tiled_grid(argmax_tiles, labels, output_path / f"{category}_nmf_basis_label_argmax_grid.png", cols=int(cols), cell_size=int(cell_size))
@@ -1227,10 +1401,18 @@ def inspect_dictionary_bank_category(
             "label_weights_16": entry.get("label_weights_16", []),
             "label_freq_16": entry.get("label_freq_16", []),
             "normalization_config": entry.get("normalization_config", {}),
+            "support_label_assignment": entry.get("support_label_assignment", []),
+            "support_label_overlap_matrix": entry.get("support_label_overlap_matrix", []),
+            "matched_overlap_scores": entry.get("matched_overlap_scores", []),
+            "mean_matched_overlap": entry.get("mean_matched_overlap"),
+            "min_matched_overlap": entry.get("min_matched_overlap"),
+            "low_overlap_basis_indices": entry.get("low_overlap_basis_indices", []),
+            "matching_method": entry.get("matching_method"),
             "basis_mass_threshold": float(basis_mass_threshold),
             "basis_stats": entry.get("basis_stats", []),
             "support_basis_stats": entry.get("support_basis_stats", []),
             "label_basis_stats": entry.get("label_basis_stats", []),
+            "matched_label_basis_stats": entry.get("matched_label_basis_stats", []),
             **(collapse_summary if isinstance(collapse_summary, dict) else {}),
             "visualized_basis": basis_rows,
             "code_mode_summary": {
@@ -1302,6 +1484,7 @@ def inspect_dictionary_bank_category(
         "basis_argmax": output_path / f"{category}_nmf_basis_label_argmax_grid.png",
         "support_basis_mass": output_path / f"{category}_nmf_support_basis_mass_grid.png",
         "label_basis_argmax": output_path / f"{category}_nmf_label_basis_argmax_grid.png",
+        "matched_label_basis_argmax": output_path / f"{category}_nmf_matched_label_basis_argmax_grid.png",
         "fused_basis_argmax": output_path / f"{category}_nmf_fused_basis_argmax_grid.png",
         "fused_basis_mass": output_path / f"{category}_nmf_fused_basis_mass_grid.png",
         "basis_mass": output_path / f"{category}_nmf_basis_mass_grid.png",
@@ -1357,12 +1540,16 @@ def inspect_all_dictionary_bank_categories(
                 "category": category,
                 "requested_rank": quality.get("requested_rank", entry.get("requested_rank") if isinstance(entry, dict) else None),
                 "effective_rank": quality.get("effective_rank", entry.get("effective_rank") if isinstance(entry, dict) else None),
+                "effective_rank_ratio": quality.get("effective_rank_ratio"),
                 "dictionary_usable": quality.get("dictionary_usable", entry.get("dictionary_usable") if isinstance(entry, dict) else None),
                 "collapsed_basis_fraction": quality.get("collapsed_basis_fraction"),
+                "mean_matched_overlap": quality.get("mean_matched_overlap"),
+                "min_matched_overlap": quality.get("min_matched_overlap"),
                 "mean_support_area": quality.get("mean_support_area"),
                 "mean_label_entropy": quality.get("mean_label_entropy"),
                 "label1_dominant_basis_fraction": quality.get("label1_dominant_basis_fraction"),
                 "warnings": quality.get("warnings", []),
+                "unusable_reasons": quality.get("unusable_reasons", []),
             }
         )
     summary = {
@@ -1379,22 +1566,25 @@ def inspect_all_dictionary_bank_categories(
         "",
         f"schema_version: {dictionary_bank.get('schema_version')}",
         "",
-        "| category | usable | requested_rank | effective_rank | collapsed_fraction | mean_support_area | mean_label_entropy | label1_fraction | warnings |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| category | usable | requested_rank | effective_rank | effective_rank_ratio | collapsed_fraction | mean_matched_overlap | min_matched_overlap | label1_fraction | warnings | unusable_reasons |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
     ]
     for row in rows:
         warnings = ", ".join(str(value) for value in row.get("warnings", []))
+        unusable_reasons = ", ".join(str(value) for value in row.get("unusable_reasons", []))
         lines.append(
-            "| {category} | {usable} | {requested} | {effective} | {collapsed} | {area} | {entropy} | {label1} | {warnings} |".format(
+            "| {category} | {usable} | {requested} | {effective} | {ratio} | {collapsed} | {mean_overlap} | {min_overlap} | {label1} | {warnings} | {reasons} |".format(
                 category=row["category"],
                 usable=row.get("dictionary_usable"),
                 requested=row.get("requested_rank"),
                 effective=row.get("effective_rank"),
+                ratio=row.get("effective_rank_ratio"),
                 collapsed=row.get("collapsed_basis_fraction"),
-                area=row.get("mean_support_area"),
-                entropy=row.get("mean_label_entropy"),
+                mean_overlap=row.get("mean_matched_overlap"),
+                min_overlap=row.get("min_matched_overlap"),
                 label1=row.get("label1_dominant_basis_fraction"),
                 warnings=warnings,
+                reasons=unusable_reasons,
             )
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -38,7 +38,7 @@ nmf_dictionary:
   feature_mode: label_balanced_onehot
   dual_dictionary:
     enabled: true
-    schema_version: foreground_v1_nmf_dual_dictionary_v1
+    schema_version: foreground_v1_nmf_dual_dictionary_matched_v1
   support_dictionary:
     feature_mode: fg_mask
     rank_same_as_label: true
@@ -74,6 +74,9 @@ nmf_dictionary:
     enabled: true
     use_category_stats: true
     min_effective_rank: 2
+    min_effective_rank_ratio: 0.5
+    max_collapsed_fraction_default: 0.5
+    max_support_empty_basis_fraction: 0.5
     allow_low_label_entropy_if_category_low_entropy: true
     allow_low_diversity_if_category_low_diversity: true
   rank_default: 8
@@ -137,20 +140,28 @@ nmf_dictionary:
         l1_ratio: 0.1
       anti_collapse:
         allow_single_label: true
+      allow_low_label_entropy: true
+      allow_high_label1_fraction: true
+      min_effective_rank_ratio: 0.5
     Links2:
       support_dictionary:
         l1_ratio: 0.1
       anti_collapse:
         allow_single_label: true
+      allow_low_label_entropy: true
+      allow_high_label1_fraction: true
+      min_effective_rank_ratio: 0.5
     Mesh:
       support_dictionary:
         l1_ratio: 0.1
         min_active_pixels: 4
       allow_fragmented_support: true
+      min_effective_rank_ratio: 0.5
     Miss:
       support_dictionary:
         min_active_pixels: 2
       allow_sparse_support: true
+      min_effective_rank_ratio: 0.5
   code_mode_count_default: 8
   code_mode_count_by_category:
     Cable1: 8

@@ -340,6 +340,8 @@ def main(argv: list[str] | None = None) -> int:
                 ("dictionary_categories", ",".join(cast(list[str], dictionary_summary["categories"]))),
                 ("dictionary_usable_categories", ",".join(cast(list[str], dictionary_summary["usable_categories"]))),
                 ("dictionary_unusable_categories", ",".join(cast(list[str], dictionary_summary["unusable_categories"]))),
+                ("unusable_reasons_by_category", dictionary_summary["unusable_reasons_by_category"]),
+                ("mean_matched_overlap_by_category", dictionary_summary["mean_matched_overlap_by_category"]),
                 ("total_nmf_basis", dictionary_summary["total_nmf_basis"]),
                 ("total_effective_basis", dictionary_summary["total_effective_basis"]),
                 ("warnings_by_category", dictionary_summary["warnings_by_category"]),
