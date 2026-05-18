@@ -6,7 +6,7 @@ from collections import Counter
 from typing import Any
 
 
-DICTIONARY_BANK_SCHEMA_VERSION = "foreground_v1_nmf_dual_dictionary_matched_v1"
+DICTIONARY_BANK_SCHEMA_VERSION = "foreground_v1_dictionary_fallback_v1"
 CANONICAL_SIZE = 20
 NUM_LABELS = 16
 IGNORE_INDEX = -100
@@ -35,6 +35,11 @@ DEFAULT_NMF_DICTIONARY_CONFIG: dict[str, Any] = {
     "dual_dictionary": {
         "enabled": True,
         "schema_version": DICTIONARY_BANK_SCHEMA_VERSION,
+    },
+    "dictionary_fallback": {
+        "enabled": True,
+        "default_strategy": "dual_matched",
+        "strategy_by_category": {},
     },
     "support_dictionary": {
         "feature_mode": "fg_mask",
@@ -149,6 +154,18 @@ def _category_config(config: dict[str, Any], category: str) -> dict[str, Any]:
     if isinstance(overrides, dict) and isinstance(overrides.get(category), dict):
         return _deep_merge(config, overrides[category])
     return config
+
+
+def _strategy_for_category(config: dict[str, Any], category: str) -> str:
+    fallback_cf = config.get("dictionary_fallback", {}) if isinstance(config.get("dictionary_fallback"), dict) else {}
+    if not bool(fallback_cf.get("enabled", False)):
+        return "dual_matched"
+    by_category = fallback_cf.get("strategy_by_category", {}) if isinstance(fallback_cf.get("strategy_by_category"), dict) else {}
+    strategy = str(by_category.get(category, fallback_cf.get("default_strategy", "dual_matched")))
+    allowed = {"dual_matched", "support_hist", "occupancy_support", "transition_aware"}
+    if strategy not in allowed:
+        raise ValueError(f"Unsupported dictionary_fallback strategy {strategy!r} for category={category!r}; expected one of {sorted(allowed)}.")
+    return strategy
 
 
 def _require_sklearn_decomposition() -> object:
@@ -454,6 +471,7 @@ def _support_stats_for_component(component: object, *, threshold: float, min_act
 
 
 def _category_label_stats(samples: list[dict[str, object]]) -> dict[str, object]:
+    label_counts = [0.0 for _ in range(NUM_LABELS)]
     entropies: list[float] = []
     diversities: list[int] = []
     for sample in samples:
@@ -464,6 +482,7 @@ def _category_label_stats(samples: list[dict[str, object]]) -> dict[str, object]
                 label_value = int(value)
                 if 1 <= label_value <= NUM_LABELS:
                     counts[label_value - 1] += 1.0
+                    label_counts[label_value - 1] += 1.0
                     total += 1.0
         if total > 0.0:
             probs = [count / total for count in counts if count > 0.0]
@@ -471,7 +490,14 @@ def _category_label_stats(samples: list[dict[str, object]]) -> dict[str, object]
             diversities.append(len(probs))
     mean_entropy = float(sum(entropies) / max(1, len(entropies)))
     mean_diversity = float(sum(diversities) / max(1, len(diversities)))
+    label_total = sum(label_counts)
+    label_hist_norm = [float(value / label_total) if label_total > 0.0 else 1.0 / float(NUM_LABELS) for value in label_counts]
+    dominant_label = int(max(range(NUM_LABELS), key=lambda index: label_hist_norm[index]) + 1) if label_hist_norm else 0
     return {
+        "label_hist_16_sum": [float(value) for value in label_counts],
+        "label_hist_norm_16": label_hist_norm,
+        "dominant_label": dominant_label,
+        "dominant_label_ratio": float(max(label_hist_norm) if label_hist_norm else 0.0),
         "mean_label_entropy": mean_entropy,
         "mean_label_diversity": mean_diversity,
         "low_entropy_category": bool(mean_entropy < 0.40),
@@ -620,6 +646,74 @@ def _basis_stats(
     }
 
 
+def _occupancy_transition_counts(mask: object, np: object, threshold: float) -> tuple[list[list[int]], list[list[int]]]:
+    active = np.asarray(mask, dtype=np.float32) > float(threshold)
+    h = [[0, 0], [0, 0]]
+    v = [[0, 0], [0, 0]]
+    for y_pos in range(CANONICAL_SIZE):
+        for x_pos in range(CANONICAL_SIZE):
+            a = 1 if bool(active[y_pos, x_pos]) else 0
+            if x_pos + 1 < CANONICAL_SIZE:
+                b = 1 if bool(active[y_pos, x_pos + 1]) else 0
+                if a + b > 0:
+                    h[a][b] += 1
+            if y_pos + 1 < CANONICAL_SIZE:
+                b = 1 if bool(active[y_pos + 1, x_pos]) else 0
+                if a + b > 0:
+                    v[a][b] += 1
+    return h, v
+
+
+def _support_hole_ratio(mask: object, np: object, threshold: float) -> float:
+    active = np.asarray(mask, dtype=np.float32) > float(threshold)
+    ys, xs = np.where(active)
+    if len(ys) == 0:
+        return 1.0
+    crop = active[int(ys.min()) : int(ys.max()) + 1, int(xs.min()) : int(xs.max()) + 1]
+    return float(1.0 - (float(crop.sum()) / float(max(1, crop.size))))
+
+
+def _broadcast_hist_label_prob(label_hist: list[float], rank: int, np: object, eps: float) -> object:
+    hist = np.asarray(label_hist, dtype=np.float32)
+    hist = np.maximum(hist, 0.0)
+    total = float(hist.sum())
+    if total <= eps:
+        hist = np.ones((NUM_LABELS,), dtype=np.float32) / float(NUM_LABELS)
+    else:
+        hist = (hist / max(total, eps)).astype(np.float32)
+    return np.broadcast_to(hist[None, :, None, None], (rank, NUM_LABELS, CANONICAL_SIZE, CANONICAL_SIZE)).copy().astype(np.float32)
+
+
+def _support_quality_indices(
+    support_stats: list[dict[str, object]],
+    *,
+    rank: int,
+    min_effective_rank: int,
+    min_effective_rank_ratio: float,
+    max_support_empty_fraction: float,
+) -> tuple[list[int], bool, list[str], dict[str, object]]:
+    effective_indices = [index for index, stat in enumerate(support_stats) if not bool(stat.get("support_empty", False))]
+    effective_rank = len(effective_indices)
+    ratio = float(effective_rank / max(1, rank))
+    support_empty_count = int(sum(1 for stat in support_stats if bool(stat.get("support_empty", False))))
+    support_empty_fraction = float(support_empty_count / max(1, rank))
+    reasons: list[str] = []
+    if effective_rank < int(min_effective_rank):
+        reasons.append(f"support_effective_rank_below_min:{effective_rank}<{int(min_effective_rank)}")
+    if ratio < float(min_effective_rank_ratio):
+        reasons.append(f"support_effective_rank_ratio_below_min:{ratio:.4f}<{float(min_effective_rank_ratio):.4f}")
+    if support_empty_fraction > float(max_support_empty_fraction):
+        reasons.append(f"support_empty_basis_fraction_high:{support_empty_fraction:.4f}>{float(max_support_empty_fraction):.4f}")
+    metrics = {
+        "support_effective_rank": int(effective_rank),
+        "effective_rank": int(effective_rank),
+        "effective_rank_ratio": float(ratio),
+        "support_empty_basis_count": int(support_empty_count),
+        "support_empty_basis_fraction": float(support_empty_fraction),
+    }
+    return effective_indices, bool(not reasons), reasons, metrics
+
+
 def _build_code_modes(category: str, codes: object, config: dict[str, Any]) -> dict[str, object]:
     np = _require_numpy()
     sklearn_cluster = _require_sklearn_cluster()
@@ -739,6 +833,11 @@ def _quality_summary(categories: dict[str, dict[str, object]]) -> dict[str, obje
     mean_matched_overlap_by_category = {
         category: float(entry.get("quality_report", {}).get("mean_matched_overlap", 0.0))
         for category, entry in categories.items()
+        if isinstance(entry, dict) and entry.get("quality_report", {}).get("mean_matched_overlap") is not None
+    }
+    strategy_by_category = {
+        category: str(entry.get("quality_report", {}).get("strategy", entry.get("strategy", "")))
+        for category, entry in categories.items()
         if isinstance(entry, dict)
     }
     return {
@@ -750,6 +849,7 @@ def _quality_summary(categories: dict[str, dict[str, object]]) -> dict[str, obje
         "warnings_by_category": warnings_by_category,
         "unusable_reasons_by_category": unusable_reasons_by_category,
         "mean_matched_overlap_by_category": mean_matched_overlap_by_category,
+        "strategy_by_category": strategy_by_category,
     }
 
 
@@ -767,6 +867,7 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
         try:
             rank = _rank_for_category(category, cfg, len(samples))
             eps = float(cfg.get("eps", 1.0e-8))
+            strategy = _strategy_for_category(config, category)
             support_cf = cfg.get("support_dictionary", {}) if isinstance(cfg.get("support_dictionary"), dict) else {}
             label_cf = cfg.get("label_dictionary", {}) if isinstance(cfg.get("label_dictionary"), dict) else {}
             fusion_cf = cfg.get("prior_fusion", {}) if isinstance(cfg.get("prior_fusion"), dict) else {}
@@ -798,6 +899,211 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
             support_mass = _normalize_component_mass(support_components, np, eps)
             gamma_fg = float(support_cf.get("gamma_fg", cfg.get("gamma_fg", 1.0)))
             basis_fg_mask_prob = (1.0 - np.exp(-gamma_fg * support_mass)).astype(np.float32)[:, None, :, :]
+
+            support_threshold = float(fusion_cf.get("support_mass_threshold", 0.05))
+            min_active = int(support_cf.get("min_active_pixels", 8))
+            support_stats = [_support_stats_for_component(support_mass[index], threshold=support_threshold, min_active_pixels=min_active, np=np) for index in range(rank)]
+            category_stats = _category_label_stats(samples)
+            min_effective_rank = int(adaptive_cf.get("min_effective_rank", 2))
+            min_effective_rank_ratio = float(cfg.get("min_effective_rank_ratio", adaptive_cf.get("min_effective_rank_ratio", 0.5)))
+            max_support_empty_fraction = float(cfg.get("max_support_empty_basis_fraction", adaptive_cf.get("max_support_empty_basis_fraction", 0.5)))
+
+            if strategy == "transition_aware":
+                selected_indices = list(range(rank))
+                effective_indices: list[int] = []
+                tensor_dtype = getattr(torch, "float16") if bool(cfg.get("save_basis_float16", False)) else getattr(torch, "float32")
+                hist_prob = _broadcast_hist_label_prob(category_stats["label_hist_norm_16"], rank, np, eps)
+                basis_label_mass = np.zeros((rank, CANONICAL_SIZE, CANONICAL_SIZE), dtype=np.float32)
+                basis_label_argmax = np.zeros((rank, CANONICAL_SIZE, CANONICAL_SIZE), dtype=np.int64)
+                quality_report = {
+                    "strategy": "transition_aware",
+                    "label_source": "not_implemented",
+                    "requested_rank": int(rank),
+                    "effective_rank": 0,
+                    "effective_rank_ratio": 0.0,
+                    "dictionary_usable": False,
+                    "unusable_reasons": ["transition_aware_not_implemented"],
+                    "support_empty_basis_count": int(sum(1 for stat in support_stats if bool(stat.get("support_empty")))),
+                    "support_empty_basis_fraction": float(sum(1 for stat in support_stats if bool(stat.get("support_empty"))) / max(1, rank)),
+                    "collapsed_basis_count": int(rank),
+                    "collapsed_basis_fraction": 1.0,
+                    "mean_matched_overlap": None,
+                    "min_matched_overlap": None,
+                    "low_overlap_basis_count": 0,
+                    "label1_dominant_basis_fraction": 0.0,
+                    "mean_support_area": float(sum(float(stat["support_area_estimate"]) for stat in support_stats) / max(1, rank)),
+                    "mean_label_entropy": float(category_stats.get("mean_label_entropy", 0.0)),
+                    "category_label_stats": category_stats,
+                    "warnings": ["transition_aware_not_implemented"],
+                }
+                category_payloads[category] = {
+                    "strategy": "transition_aware",
+                    "num_samples": int(len(samples)),
+                    "requested_rank": int(rank),
+                    "rank": int(len(selected_indices)),
+                    "effective_rank": 0,
+                    "effective_basis_indices": effective_indices,
+                    "dictionary_usable": False,
+                    "unusable_reasons": ["transition_aware_not_implemented"],
+                    "basis_label_prob_16": torch.tensor(hist_prob[selected_indices], dtype=tensor_dtype),
+                    "basis_fg_mask_prob": torch.tensor(basis_fg_mask_prob[selected_indices], dtype=tensor_dtype),
+                    "basis_label_argmax": basis_label_argmax[selected_indices].tolist(),
+                    "basis_label_mass": torch.tensor(basis_label_mass[selected_indices], dtype=tensor_dtype),
+                    "support_basis_mass": torch.tensor(support_mass[selected_indices], dtype=tensor_dtype),
+                    "basis_stats": [],
+                    "support_basis_stats": [support_stats[index] for index in selected_indices],
+                    "quality_report": quality_report,
+                    "label_freq_16": [float(value) for value in category_stats["label_hist_norm_16"]],
+                    "feature_mode": "transition_aware_placeholder",
+                    "basis_for_label_prob": "transition_aware_not_implemented",
+                    "basis_for_support": "support_dictionary",
+                    "normalization_config": {
+                        "strategy": "transition_aware",
+                        "dictionary_fallback": config.get("dictionary_fallback", {}),
+                        "support_dictionary": support_cf,
+                        "prior_fusion": fusion_cf,
+                        "category_adaptive": adaptive_cf,
+                    },
+                    "sample_ids": sample_ids,
+                    "sample_to_basis_argmax": {sample_id: 0 for sample_id in sample_ids},
+                    "code_mode": {"mode_count": 0, "mode_weights": [], "mode_num_samples": [], "mode_code_mean": []},
+                    "code_mode_summary": {"mode_count": 0, "mode_weights": [], "mode_num_samples": []},
+                }
+                continue
+
+            if strategy in ("support_hist", "occupancy_support"):
+                effective_indices, support_usable, support_reasons, support_quality = _support_quality_indices(
+                    support_stats,
+                    rank=rank,
+                    min_effective_rank=min_effective_rank,
+                    min_effective_rank_ratio=min_effective_rank_ratio,
+                    max_support_empty_fraction=max_support_empty_fraction,
+                )
+                selected_indices = effective_indices if effective_indices else list(range(rank))
+                label_prob_16 = _broadcast_hist_label_prob(category_stats["label_hist_norm_16"], rank, np, eps)
+                label_confidence = label_prob_16.max(axis=1).astype(np.float32)
+                basis_label_mass = (support_mass * label_confidence).astype(np.float32)
+                argmax_raw = label_prob_16.argmax(axis=1).astype(np.int64) + 1
+                basis_label_argmax = np.where(support_mass > support_threshold, argmax_raw, 0).astype(np.int64)
+                basis_stats: list[dict[str, object]] = []
+                occupancy_h_values: list[list[list[int]]] = []
+                occupancy_v_values: list[list[list[int]]] = []
+                support_hole_values: list[float] = []
+                for basis_index in range(rank):
+                    label_argmax = [[int(basis_label_argmax[basis_index, y_pos, x_pos]) for x_pos in range(CANONICAL_SIZE)] for y_pos in range(CANONICAL_SIZE)]
+                    stat = _basis_stats(
+                        basis_index=basis_index,
+                        basis_mass=basis_label_mass[basis_index],
+                        fg_mask_prob=basis_fg_mask_prob[basis_index],
+                        label_prob_16=label_prob_16[basis_index],
+                        argmax_grid=label_argmax,
+                        threshold=support_threshold,
+                        eps=eps,
+                    )
+                    occ_h, occ_v = _occupancy_transition_counts(support_mass[basis_index], np, support_threshold)
+                    support_hole = _support_hole_ratio(support_mass[basis_index], np, support_threshold)
+                    occupancy_h_values.append(occ_h)
+                    occupancy_v_values.append(occ_v)
+                    support_hole_values.append(float(support_hole))
+                    stat.update(
+                        {
+                            **support_stats[basis_index],
+                            "strategy": strategy,
+                            "label_source": "category_label_hist",
+                            "support_empty": bool(support_stats[basis_index]["support_empty"]),
+                            "label_empty": False,
+                            "basis_empty": bool(support_stats[basis_index]["support_empty"]),
+                            "basis_collapsed": False,
+                            "occupancy_transition_h": occ_h,
+                            "occupancy_transition_v": occ_v,
+                            "support_hole_ratio": float(support_hole),
+                        }
+                    )
+                    basis_stats.append(stat)
+                basis_stats_eff = [basis_stats[index] for index in selected_indices]
+                mean_fragmentation = float(sum(float(stat["support_fragmentation_score"]) for stat in support_stats) / max(1, rank))
+                mean_support_hole = float(sum(support_hole_values) / max(1, len(support_hole_values)))
+                unusable_reasons = list(support_reasons)
+                dictionary_usable = bool(support_usable)
+                warnings = []
+                if not dictionary_usable:
+                    warnings.append("dictionary unusable: " + "; ".join(unusable_reasons))
+                if strategy == "occupancy_support" and not bool(cfg.get("allow_fragmented_support", False)) and mean_fragmentation > 0.25:
+                    warnings.append(f"fragmented_support_mean={mean_fragmentation:.4f}")
+                label1_fraction = 1.0 if int(category_stats.get("dominant_label", 0)) == 1 else 0.0
+                quality_report = {
+                    "strategy": strategy,
+                    "label_source": "category_label_hist",
+                    "requested_rank": int(rank),
+                    **support_quality,
+                    "dictionary_usable": bool(dictionary_usable),
+                    "unusable_reasons": unusable_reasons,
+                    "support_empty_basis_count": int(support_quality["support_empty_basis_count"]),
+                    "label_empty_basis_count": 0,
+                    "collapsed_basis_count": 0,
+                    "collapsed_basis_fraction": 0.0,
+                    "mean_matched_overlap": None,
+                    "min_matched_overlap": None,
+                    "low_overlap_basis_count": 0,
+                    "label1_dominant_basis_fraction": float(label1_fraction),
+                    "mean_support_area": float(sum(float(stat["support_area_estimate"]) for stat in support_stats) / max(1, rank)),
+                    "mean_label_entropy": float(category_stats.get("mean_label_entropy", 0.0)),
+                    "category_label_stats": category_stats,
+                    "support_hole_ratio": float(mean_support_hole),
+                    "support_fragmentation_score": float(mean_fragmentation),
+                    "occupancy_transition_h": occupancy_h_values,
+                    "occupancy_transition_v": occupancy_v_values,
+                    "warnings": warnings,
+                }
+                eff = np.asarray(selected_indices, dtype=np.int64)
+                support_codes_eff = support_codes[:, eff]
+                code_mode = _build_code_modes(category, support_codes_eff, cfg)
+                assigned = code_mode.pop("_assigned")
+                code_mode["sample_to_code_mode"] = {sample_id: int(mode_index) for sample_id, mode_index in zip(sample_ids, assigned)}
+                tensor_dtype = getattr(torch, "float16") if bool(cfg.get("save_basis_float16", False)) else getattr(torch, "float32")
+                category_payload: dict[str, object] = {
+                    "strategy": strategy,
+                    "num_samples": int(len(samples)),
+                    "requested_rank": int(rank),
+                    "rank": int(len(selected_indices)),
+                    "effective_rank": int(support_quality["effective_rank"]),
+                    "effective_basis_indices": [int(index) for index in effective_indices],
+                    "dictionary_usable": bool(dictionary_usable),
+                    "unusable_reasons": unusable_reasons,
+                    "basis_label_prob_16": torch.tensor(label_prob_16[eff], dtype=tensor_dtype),
+                    "basis_fg_mask_prob": torch.tensor(basis_fg_mask_prob[eff], dtype=tensor_dtype),
+                    "basis_label_argmax": basis_label_argmax[eff].tolist(),
+                    "basis_label_mass": torch.tensor(basis_label_mass[eff], dtype=tensor_dtype),
+                    "support_basis_mass": torch.tensor(support_mass[eff], dtype=tensor_dtype),
+                    "basis_stats": basis_stats_eff,
+                    "support_basis_stats": [support_stats[index] for index in selected_indices],
+                    "quality_report": quality_report,
+                    "label_freq_16": [float(value) for value in category_stats["label_hist_norm_16"]],
+                    "label_weights_16": [1.0 for _ in range(NUM_LABELS)],
+                    "feature_mode": strategy,
+                    "basis_for_label_prob": "category_label_hist",
+                    "basis_for_support": "support_dictionary",
+                    "normalization_config": {
+                        "strategy": strategy,
+                        "dictionary_fallback": config.get("dictionary_fallback", {}),
+                        "support_dictionary": support_cf,
+                        "prior_fusion": fusion_cf,
+                        "category_adaptive": adaptive_cf,
+                    },
+                    "sample_ids": sample_ids,
+                    "sample_to_basis_argmax": {sample_id: int(np.argmax(support_codes_eff[index]).item()) for index, sample_id in enumerate(sample_ids)},
+                    "code_mode": code_mode,
+                    "code_mode_summary": {
+                        "mode_count": code_mode.get("mode_count", 0),
+                        "mode_weights": code_mode.get("mode_weights", []),
+                        "mode_num_samples": code_mode.get("mode_num_samples", []),
+                    },
+                }
+                if bool(cfg.get("save_sample_codes", True)):
+                    category_payload["support_codes_H"] = torch.tensor(support_codes_eff, dtype=getattr(torch, "float32"))
+                    category_payload["codes_H"] = torch.tensor(support_codes_eff, dtype=getattr(torch, "float32"))
+                category_payloads[category] = category_payload
+                continue
 
             label_x, label_freq, label_weights = _weighted_feature_matrix(samples, cfg, np)
             label_codes, label_components_flat = _fit_nmf_components(label_x, rank, label_fit_cf, np)
@@ -948,6 +1254,7 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
             selected_indices = effective_indices if effective_indices else list(range(rank))
             basis_stats_eff = [basis_stats[index] for index in selected_indices]
             quality_report = {
+                "strategy": "dual_matched",
                 "requested_rank": int(rank),
                 "effective_rank": int(effective_rank),
                 "effective_rank_ratio": float(effective_rank_ratio),
@@ -985,6 +1292,7 @@ def _build_dual_dictionary_bank(items: list[dict[str, object]], config: dict[str
             code_mode["sample_to_code_mode"] = {sample_id: int(mode_index) for sample_id, mode_index in zip(sample_ids, assigned)}
             tensor_dtype = getattr(torch, "float16") if bool(cfg.get("save_basis_float16", False)) else getattr(torch, "float32")
             category_payload: dict[str, object] = {
+                "strategy": "dual_matched",
                 "num_samples": int(len(samples)),
                 "requested_rank": int(rank),
                 "rank": int(len(selected_indices)),
@@ -1250,10 +1558,10 @@ def build_dictionary_bank(items: list[dict[str, object]], config: dict[str, Any]
 
 def dictionary_bank_summary(dictionary_bank: object) -> dict[str, object]:
     if not isinstance(dictionary_bank, dict):
-        return {"enabled": False, "schema_version": None, "categories": [], "usable_categories": [], "unusable_categories": [], "total_nmf_basis": 0, "total_effective_basis": 0, "warnings_by_category": {}, "unusable_reasons_by_category": {}, "mean_matched_overlap_by_category": {}}
+        return {"enabled": False, "schema_version": None, "categories": [], "usable_categories": [], "unusable_categories": [], "total_nmf_basis": 0, "total_effective_basis": 0, "warnings_by_category": {}, "unusable_reasons_by_category": {}, "mean_matched_overlap_by_category": {}, "strategy_by_category": {}}
     categories = dictionary_bank.get("categories", {})
     if not isinstance(categories, dict):
-        return {"enabled": bool(dictionary_bank.get("enabled", False)), "schema_version": dictionary_bank.get("schema_version"), "categories": [], "usable_categories": [], "unusable_categories": [], "total_nmf_basis": 0, "total_effective_basis": 0, "warnings_by_category": {}, "unusable_reasons_by_category": {}, "mean_matched_overlap_by_category": {}}
+        return {"enabled": bool(dictionary_bank.get("enabled", False)), "schema_version": dictionary_bank.get("schema_version"), "categories": [], "usable_categories": [], "unusable_categories": [], "total_nmf_basis": 0, "total_effective_basis": 0, "warnings_by_category": {}, "unusable_reasons_by_category": {}, "mean_matched_overlap_by_category": {}, "strategy_by_category": {}}
     unusable = []
     usable = []
     for category, entry in categories.items():
@@ -1273,6 +1581,7 @@ def dictionary_bank_summary(dictionary_bank: object) -> dict[str, object]:
         "warnings_by_category": quality_summary.get("warnings_by_category", {}),
         "unusable_reasons_by_category": quality_summary.get("unusable_reasons_by_category", {}),
         "mean_matched_overlap_by_category": quality_summary.get("mean_matched_overlap_by_category", {}),
+        "strategy_by_category": quality_summary.get("strategy_by_category", {}),
     }
 
 
@@ -1386,6 +1695,7 @@ def inspect_dictionary_bank_category(
         {
             "schema_version": dictionary_bank.get("schema_version"),
             "category": category,
+            "strategy": entry.get("strategy", (entry.get("quality_report", {}) if isinstance(entry.get("quality_report", {}), dict) else {}).get("strategy")),
             "rank": int(entry.get("rank", 0)),
             "requested_rank": int(entry.get("requested_rank", entry.get("rank", 0))),
             "effective_rank": int(entry.get("effective_rank", entry.get("rank", 0))),
@@ -1480,6 +1790,12 @@ def inspect_dictionary_bank_category(
     if sparse_tiles:
         save_tiled_grid(sparse_tiles, sparse_labels, output_path / f"{category}_nmf_sampled_prior_sparse_grid.png", cols=int(cols), cell_size=int(cell_size))
         save_tiled_grid(sparse_tiles, sparse_labels, output_path / f"{category}_nmf_sampled_prior_grid.png", cols=int(cols), cell_size=int(cell_size))
+    strategy = str(entry.get("strategy", (entry.get("quality_report", {}) if isinstance(entry.get("quality_report", {}), dict) else {}).get("strategy", "")))
+    if strategy in ("support_hist", "occupancy_support"):
+        save_tiled_grid(support_tiles, labels, output_path / f"{category}_fallback_support_mass_grid.png", cols=int(cols), cell_size=int(cell_size))
+        save_tiled_grid(argmax_tiles, labels, output_path / f"{category}_fallback_fused_argmax_grid.png", cols=int(cols), cell_size=int(cell_size))
+        if sparse_tiles:
+            save_tiled_grid(sparse_tiles, sparse_labels, output_path / f"{category}_fallback_sampled_prior_sparse_grid.png", cols=int(cols), cell_size=int(cell_size))
     return {
         "basis_argmax": output_path / f"{category}_nmf_basis_label_argmax_grid.png",
         "support_basis_mass": output_path / f"{category}_nmf_support_basis_mass_grid.png",
@@ -1494,6 +1810,9 @@ def inspect_dictionary_bank_category(
         "sampled_prior_dense": output_path / f"{category}_nmf_sampled_prior_dense_grid.png" if dense_tiles else None,
         "sampled_prior_sparse": output_path / f"{category}_nmf_sampled_prior_sparse_grid.png" if sparse_tiles else None,
         "sampled_prior": output_path / f"{category}_nmf_sampled_prior_grid.png" if sparse_tiles else None,
+        "fallback_support_mass": output_path / f"{category}_fallback_support_mass_grid.png" if strategy in ("support_hist", "occupancy_support") else None,
+        "fallback_fused_argmax": output_path / f"{category}_fallback_fused_argmax_grid.png" if strategy in ("support_hist", "occupancy_support") else None,
+        "fallback_sampled_prior_sparse": output_path / f"{category}_fallback_sampled_prior_sparse_grid.png" if strategy in ("support_hist", "occupancy_support") and sparse_tiles else None,
     }
 
 
@@ -1538,6 +1857,7 @@ def inspect_all_dictionary_bank_categories(
         rows.append(
             {
                 "category": category,
+                "strategy": quality.get("strategy", entry.get("strategy") if isinstance(entry, dict) else None),
                 "requested_rank": quality.get("requested_rank", entry.get("requested_rank") if isinstance(entry, dict) else None),
                 "effective_rank": quality.get("effective_rank", entry.get("effective_rank") if isinstance(entry, dict) else None),
                 "effective_rank_ratio": quality.get("effective_rank_ratio"),
@@ -1566,22 +1886,22 @@ def inspect_all_dictionary_bank_categories(
         "",
         f"schema_version: {dictionary_bank.get('schema_version')}",
         "",
-        "| category | usable | requested_rank | effective_rank | effective_rank_ratio | collapsed_fraction | mean_matched_overlap | min_matched_overlap | label1_fraction | warnings | unusable_reasons |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
+        "| category | strategy | usable | requested_rank | effective_rank | effective_rank_ratio | collapsed_fraction | mean_matched_overlap | label1_fraction | warnings | unusable_reasons |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
     ]
     for row in rows:
         warnings = ", ".join(str(value) for value in row.get("warnings", []))
         unusable_reasons = ", ".join(str(value) for value in row.get("unusable_reasons", []))
         lines.append(
-            "| {category} | {usable} | {requested} | {effective} | {ratio} | {collapsed} | {mean_overlap} | {min_overlap} | {label1} | {warnings} | {reasons} |".format(
+            "| {category} | {strategy} | {usable} | {requested} | {effective} | {ratio} | {collapsed} | {mean_overlap} | {label1} | {warnings} | {reasons} |".format(
                 category=row["category"],
+                strategy=row.get("strategy"),
                 usable=row.get("dictionary_usable"),
                 requested=row.get("requested_rank"),
                 effective=row.get("effective_rank"),
                 ratio=row.get("effective_rank_ratio"),
                 collapsed=row.get("collapsed_basis_fraction"),
                 mean_overlap=row.get("mean_matched_overlap"),
-                min_overlap=row.get("min_matched_overlap"),
                 label1=row.get("label1_dominant_basis_fraction"),
                 warnings=warnings,
                 reasons=unusable_reasons,

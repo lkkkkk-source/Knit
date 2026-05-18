@@ -38,7 +38,21 @@ nmf_dictionary:
   feature_mode: label_balanced_onehot
   dual_dictionary:
     enabled: true
-    schema_version: foreground_v1_nmf_dual_dictionary_matched_v1
+    schema_version: foreground_v1_dictionary_fallback_v1
+  dictionary_fallback:
+    enabled: true
+    default_strategy: dual_matched
+    strategy_by_category:
+      Cable1: dual_matched
+      Cable2: dual_matched
+      Tuck: dual_matched
+      Miss: dual_matched
+      Move2: dual_matched
+      Links1: support_hist
+      Links2: support_hist
+      Hem: support_hist
+      Mesh: occupancy_support
+      Move1: transition_aware
   support_dictionary:
     feature_mode: fg_mask
     rank_same_as_label: true
