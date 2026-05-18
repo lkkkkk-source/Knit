@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from .grammar_energy import build_grammar_bank
+from .instruction_matrix_grammar import build_instruction_matrix_grammar_prior, instruction_grammar_prior_summary
 from .nmf_dictionary import build_dictionary_bank, dictionary_bank_summary
 from .utils import IGNORE_INDEX, REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION, assert_no_forbidden_cache_fields, bbox_vector, canonicalize_foreground, clustering_feature_from_parts, descriptor_global_stats, descriptor_stats_by_category, ensure_descriptor_dim, finish_progress, foreground_descriptor, format_metric_line, foreground_area, load_config, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, require_ignore_index, resolve_canonical_mode, resolve_manifest_path, validate_foreground_labels
 
@@ -67,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     clustering_cf = cast(dict[str, object], config.get("clustering", {})) if isinstance(config.get("clustering", {}), dict) else {}
     grammar_bank_cf = cast(dict[str, object], config.get("grammar_bank", {})) if isinstance(config.get("grammar_bank", {}), dict) else {}
     nmf_dictionary_cf = cast(dict[str, object], config.get("nmf_dictionary", {})) if isinstance(config.get("nmf_dictionary", {}), dict) else {}
+    instruction_grammar_cf = cast(dict[str, object], config.get("instruction_matrix_grammar_prior", {})) if isinstance(config.get("instruction_matrix_grammar_prior", {}), dict) else {}
     canonical_mode = resolve_canonical_mode(data_cf)
     ignore_index = require_ignore_index(data_cf)
     manifest_path = Path(args.manifest or data_cf["train_manifest"])
@@ -234,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
 
     grammar_bank = build_grammar_bank(items, grammar_bank_cf) if bool(grammar_bank_cf.get("enabled", True)) else {"enabled": False, "categories": {}}
     dictionary_bank = build_dictionary_bank(items, nmf_dictionary_cf)
+    instruction_grammar_prior = build_instruction_matrix_grammar_prior(items, instruction_grammar_cf)
     if args.fit_kmeans:
         for category, samples in nondegenerate_by_category.items():
             num_modes_c = int(category_to_num_modes.get(category, 1))
@@ -311,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         "centroid_sketch_by_category": centroid_sketch_by_category,
         "grammar_bank": grammar_bank,
         "dictionary_bank": dictionary_bank,
+        "instruction_matrix_grammar_prior": instruction_grammar_prior,
         "descriptor_slices": descriptor_slices or {},
         "config": config,
     }
@@ -322,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     grammar_categories = sorted(grammar_bank.get("categories", {}).keys()) if isinstance(grammar_bank, dict) else []
     grammar_total_modes = sum(len(entry.get("modes", {})) for entry in grammar_bank.get("categories", {}).values()) if isinstance(grammar_bank, dict) else 0
     dictionary_summary = dictionary_bank_summary(dictionary_bank)
+    instruction_grammar_summary = instruction_grammar_prior_summary(instruction_grammar_prior)
     print(
         format_metric_line(
             "saved foreground cache:",
@@ -346,6 +351,14 @@ def main(argv: list[str] | None = None) -> int:
                 ("total_nmf_basis", dictionary_summary["total_nmf_basis"]),
                 ("total_effective_basis", dictionary_summary["total_effective_basis"]),
                 ("warnings_by_category", dictionary_summary["warnings_by_category"]),
+                ("instruction_grammar_enabled", instruction_grammar_summary["enabled"]),
+                ("instruction_grammar_schema", instruction_grammar_summary["schema_version"]),
+                ("instruction_grammar_categories", ",".join(cast(list[str], instruction_grammar_summary["categories"]))),
+                ("instruction_grammar_usable_categories", ",".join(cast(list[str], instruction_grammar_summary["usable_categories"]))),
+                ("instruction_grammar_unusable_categories", ",".join(cast(list[str], instruction_grammar_summary["unusable_categories"]))),
+                ("instruction_grammar_total_modes", instruction_grammar_summary["total_modes"]),
+                ("instruction_grammar_unusable_reasons_by_category", instruction_grammar_summary["unusable_reasons_by_category"]),
+                ("stores_instruction_grammar_large_features", False),
                 ("stores_onehot", False),
                 ("stores_X_matrix", False),
                 ("stores_large_features", False),

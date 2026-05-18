@@ -189,8 +189,93 @@ nmf_dictionary:
     Links2: 4
     Miss: 4
 
+instruction_matrix_grammar_prior:
+  enabled: true
+  schema_version: foreground_v1_instruction_matrix_grammar_prior_v1
+  mode_count_default: 8
+  mode_count_by_category:
+    Cable1: 12
+    Cable2: 12
+    Hem: 8
+    Links1: 4
+    Links2: 4
+    Mesh: 8
+    Miss: 6
+    Move1: 12
+    Move2: 12
+    Tuck: 8
+  descriptor_weights:
+    support: 0.5
+    label_hist: 0.8
+    transition: 1.2
+    motif2: 1.2
+    motif3: 0.6
+    row_program: 1.0
+    col_program: 1.0
+    directional_shift: 1.5
+    occupancy: 0.8
+    component: 0.4
+  motif2:
+    enabled: true
+    top_k: 128
+    include_background: true
+  motif3:
+    enabled: true
+    top_k: 128
+    include_background: true
+  row_program:
+    enabled: true
+    top_k: 128
+    max_program_len: 20
+  col_program:
+    enabled: true
+    top_k: 128
+    max_program_len: 20
+  directional_shift:
+    enabled: true
+    shift_clip: 3
+    labels: all
+    apply_to_categories:
+      - Move1
+      - Move2
+      - Cable1
+      - Cable2
+  clustering:
+    method: kmeans
+    random_state: 0
+    n_init: 10
+    max_iter: 300
+    min_samples_per_mode: 2
+    reduce_modes_if_needed: true
+    normalize_descriptor_blocks: true
+  aggregation:
+    fg_threshold: 0.05
+    eps: 1.0e-8
+    save_float16: false
+  quality:
+    min_effective_modes_default: 2
+    min_effective_mode_fraction_default: 0.5
+    min_mode_samples: 1
+    min_mean_fg_area: 0.005
+    max_empty_mode_fraction: 0.5
+    max_label_collapse_fraction_default: 0.75
+    require_directional_non_degenerate_for:
+      - Move1
+  strategy_by_category:
+    Cable1: grammar_modes
+    Cable2: grammar_modes
+    Hem: grammar_modes
+    Links1: grammar_modes
+    Links2: grammar_modes
+    Mesh: grammar_modes
+    Miss: grammar_modes
+    Move1: grammar_modes_directional
+    Move2: grammar_modes_directional
+    Tuck: grammar_modes
+
 grammar_rerank:
   enabled: false
+  use_instruction_matrix_grammar_terms: false
   top_k: 8
   invalid_penalty: 999.0
   weights:

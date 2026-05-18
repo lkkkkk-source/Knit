@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from .grammar_energy import save_grammar_bank_inspection
+from .instruction_matrix_grammar import inspect_all_instruction_grammar_prior_categories, inspect_instruction_grammar_prior_category
 from .nmf_dictionary import inspect_all_dictionary_bank_categories, inspect_dictionary_bank_category
 from .utils import EXPECTED_DESCRIPTOR_DIM, IGNORE_INDEX, REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION, assert_no_forbidden_cache_fields, format_metric_line, foreground_area, label_diversity_on_fg, resolve_canonical_mode, save_json, save_jsonl
 
@@ -65,8 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grammar-category", type=str, default=None)
     parser.add_argument("--top-motifs", type=int, default=20)
     parser.add_argument("--inspect-nmf-bank", action="store_true")
+    parser.add_argument("--inspect-instruction-grammar-prior", action="store_true")
     parser.add_argument("--inspect-all-categories", action="store_true")
     parser.add_argument("--nmf-category", type=str, default=None)
+    parser.add_argument("--instruction-grammar-category", type=str, default=None)
     parser.add_argument("--basis-mass-threshold", type=float, default=0.05)
     parser.add_argument("--num-basis-samples", type=int, default=16)
     return parser
@@ -394,6 +397,45 @@ def main(argv: list[str] | None = None) -> int:
         for path in paths.values():
             if path is not None:
                 print(path)
+        return 0
+    if args.inspect_instruction_grammar_prior:
+        prior = payload.get("instruction_matrix_grammar_prior")
+        if not isinstance(prior, dict):
+            raise ValueError("Cache does not contain instruction_matrix_grammar_prior. Rebuild cache with instruction_matrix_grammar_prior.enabled=true.")
+        if bool(args.inspect_all_categories):
+            paths = inspect_all_instruction_grammar_prior_categories(
+                prior,
+                output_dir,
+                basis_mass_threshold=float(args.basis_mass_threshold),
+                num_basis_samples=int(args.num_basis_samples),
+                cols=int(args.cols),
+                cell_size=int(args.cell_size),
+                save_tiled_grid=_save_tiled_grid,
+                grid_to_rgb=_grid_to_rgb,
+                prob_grid_to_rgb=_prob_grid_to_rgb,
+                save_json=save_json,
+            )
+            print(format_metric_line("inspect-instruction-grammar-prior-all:", [("categories", len(paths.get("categories", {}))), ("output_dir", str(output_dir))]))
+            for path in paths.get("summary", {}).values():
+                print(path)
+            return 0
+        grammar_category = str(args.instruction_grammar_category or args.category)
+        paths = inspect_instruction_grammar_prior_category(
+            prior,
+            grammar_category,
+            output_dir,
+            basis_mass_threshold=float(args.basis_mass_threshold),
+            num_basis_samples=int(args.num_basis_samples),
+            cols=int(args.cols),
+            cell_size=int(args.cell_size),
+            save_tiled_grid=_save_tiled_grid,
+            grid_to_rgb=_grid_to_rgb,
+            prob_grid_to_rgb=_prob_grid_to_rgb,
+            save_json=save_json,
+        )
+        print(format_metric_line("inspect-instruction-grammar-prior:", [("category", grammar_category), ("outputs", len(paths))]))
+        for path in paths.values():
+            print(path)
         return 0
     if args.category not in payload["category_to_num_modes"]:
         raise ValueError(f"Category {args.category!r} not found in category_to_num_modes.")
