@@ -39,6 +39,9 @@ DEFAULT_INSTRUCTION_GRAMMAR_CONFIG: dict[str, Any] = {
         "shift_clip": 3,
         "labels": "all",
         "apply_to_categories": ["Move1", "Move2", "Cable1", "Cable2"],
+        "min_nonzero_shift_mass_for_move": 0.05,
+        "min_abs_directional_asymmetry_for_move": 0.02,
+        "min_shift_entropy_for_move": 0.05,
     },
     "clustering": {
         "method": "kmeans",
@@ -146,7 +149,8 @@ def _entropy_from_counts(counts: Counter[Any]) -> float:
 
 
 def _entropy_from_probs(values: list[float]) -> float:
-    return float(-sum(float(value) * math.log(float(value) + 1.0e-12) for value in values if float(value) > 0.0))
+    entropy = -sum(float(value) * math.log(float(value)) for value in values if float(value) > 0.0)
+    return float(max(entropy, 0.0))
 
 
 def _normalize_distribution(values: list[float], eps: float = 1.0e-8) -> list[float]:
@@ -171,8 +175,15 @@ def _vector_stats(values: list[float]) -> dict[str, float]:
 
 def _top_counter(counter: Counter[Any], top_k: int) -> list[dict[str, Any]]:
     rows = []
+    total = float(sum(int(value) for value in counter.values()))
     for key, count in counter.most_common(max(0, int(top_k))):
-        rows.append({"program": list(key) if isinstance(key, tuple) else key, "count": int(count)})
+        rows.append(
+            {
+                "program": list(key) if isinstance(key, tuple) else key,
+                "count": int(count),
+                "prob": float(int(count) / total) if total > 0.0 else 0.0,
+            }
+        )
     return rows
 
 
@@ -309,7 +320,41 @@ def _occupancy_descriptor(mask: list[list[int]]) -> dict[str, Any]:
     return {"occupancy_h": _normalize_distribution([value for row in h for value in row]), "occupancy_v": _normalize_distribution([value for row in v for value in row])}
 
 
-def _directional_descriptor(raw: list[list[int]], mask: list[list[int]], shift_clip: int) -> dict[str, Any]:
+def _directional_zero_descriptor(shift_clip: int) -> dict[str, Any]:
+    clip = max(1, int(shift_clip))
+    bins = list(range(-clip, clip + 1))
+    return {
+        "diag_down_right": [0.0 for _ in range(NUM_LABELS * NUM_LABELS)],
+        "diag_down_left": [0.0 for _ in range(NUM_LABELS * NUM_LABELS)],
+        "shift_hist": [0.0 for _ in bins],
+        "label_shift_hist": [0.0 for _ in range(NUM_LABELS * len(bins))],
+        "label_shift_mean": [0.0 for _ in range(NUM_LABELS)],
+        "label_shift_std": [0.0 for _ in range(NUM_LABELS)],
+        "shift_mean": 0.0,
+        "shift_std": 0.0,
+        "shift_nonzero_fraction": 0.0,
+        "slant_right_score": 0.0,
+        "slant_left_score": 0.0,
+        "directional_asymmetry": 0.0,
+        "support_shift_entropy": 0.0,
+        "directional_enabled": False,
+    }
+
+
+def _directional_label_set(labels_config: Any) -> set[int]:
+    if isinstance(labels_config, str) and labels_config.lower() == "all":
+        return set(range(1, NUM_LABELS + 1))
+    if isinstance(labels_config, (list, tuple, set)):
+        labels = set()
+        for value in labels_config:
+            label = int(value)
+            if 1 <= label <= NUM_LABELS:
+                labels.add(label)
+        return labels
+    return set(range(1, NUM_LABELS + 1))
+
+
+def _directional_descriptor(raw: list[list[int]], mask: list[list[int]], shift_clip: int, labels_config: Any) -> dict[str, Any]:
     diag_dr = [[0.0 for _ in range(NUM_LABELS)] for _ in range(NUM_LABELS)]
     diag_dl = [[0.0 for _ in range(NUM_LABELS)] for _ in range(NUM_LABELS)]
     for y_pos in range(CANONICAL_SIZE - 1):
@@ -343,7 +388,13 @@ def _directional_descriptor(raw: list[list[int]], mask: list[list[int]], shift_c
     label_shift_hist: list[float] = []
     label_shift_mean: list[float] = []
     label_shift_std: list[float] = []
+    active_labels = _directional_label_set(labels_config)
     for label in range(1, NUM_LABELS + 1):
+        if label not in active_labels:
+            label_shift_hist.extend([0.0 for _ in bins])
+            label_shift_mean.append(0.0)
+            label_shift_std.append(0.0)
+            continue
         centers: list[float | None] = []
         for y_pos in range(CANONICAL_SIZE):
             xs = [x_pos for x_pos in range(CANONICAL_SIZE) if int(raw[y_pos][x_pos]) == label]
@@ -382,6 +433,7 @@ def _directional_descriptor(raw: list[list[int]], mask: list[list[int]], shift_c
         "slant_left_score": float(dl_total),
         "directional_asymmetry": float((dr_total - dl_total) / max(1.0, dr_total + dl_total)),
         "support_shift_entropy": _entropy_from_probs(shift_hist),
+        "directional_enabled": True,
     }
 
 
@@ -392,7 +444,7 @@ def _hist_for_vocab(counter: Counter[Any], vocab: list[Any]) -> list[float]:
     return _normalize_distribution([*values, other])
 
 
-def _sample_descriptor(raw: list[list[int]], config: dict[str, Any], vocab: dict[str, list[Any]]) -> dict[str, Any]:
+def _sample_descriptor(raw: list[list[int]], config: dict[str, Any], vocab: dict[str, list[Any]], *, category: str) -> dict[str, Any]:
     weights = config.get("descriptor_weights", {}) if isinstance(config.get("descriptor_weights"), dict) else {}
     clustering_cf = config.get("clustering", {}) if isinstance(config.get("clustering"), dict) else {}
     normalize_blocks = bool(clustering_cf.get("normalize_descriptor_blocks", True))
@@ -428,8 +480,16 @@ def _sample_descriptor(raw: list[list[int]], config: dict[str, Any], vocab: dict
     row_counts, row_nonzero, row_start, row_end = _program_counts(raw, "row")
     col_counts, col_nonzero, col_start, col_end = _program_counts(raw, "col")
     num_components, largest_component_ratio, tiny_island_count, component_area_mean, component_area_max = _components(mask)
-    shift_clip = int((config.get("directional_shift", {}) if isinstance(config.get("directional_shift"), dict) else {}).get("shift_clip", 3))
-    directional = _directional_descriptor(raw, mask, shift_clip)
+    directional_cf = config.get("directional_shift", {}) if isinstance(config.get("directional_shift"), dict) else {}
+    shift_clip = int(directional_cf.get("shift_clip", 3))
+    apply_to_categories = directional_cf.get("apply_to_categories", [])
+    directional_enabled = bool(directional_cf.get("enabled", True))
+    if isinstance(apply_to_categories, list):
+        directional_enabled = directional_enabled and category in {str(value) for value in apply_to_categories}
+    if directional_enabled:
+        directional = _directional_descriptor(raw, mask, shift_clip, directional_cf.get("labels", "all"))
+    else:
+        directional = _directional_zero_descriptor(shift_clip)
     motif2_hist = _hist_for_vocab(motif2_counts, vocab.get("motif2", []))
     motif3_hist = _hist_for_vocab(motif3_counts, vocab.get("motif3", []))
     row_program_hist = _hist_for_vocab(row_counts, vocab.get("row_program", []))
@@ -630,6 +690,8 @@ def _aggregate_mode(samples: list[dict[str, Any]], mode_index: int, config: dict
         "mode_transition_v_mean": [float(sum(float(sample["transition_v"][index]) for sample in samples) / max(1, len(samples))) for index in range(NUM_LABELS * NUM_LABELS)],
         "mode_directional_shift_stats": _directional_stats(directional_values),
         "mode_active_pixels": int((fg_prob >= fg_threshold).sum().item() if hasattr((fg_prob >= fg_threshold).sum(), "item") else (fg_prob >= fg_threshold).sum()),
+        "top_row_programs": _top_counter(row_counter, 10),
+        "top_col_programs": _top_counter(col_counter, 10),
     }
     return {
         "basis_fg_mask_prob": torch.tensor(fg_prob[None, :, :], dtype=dtype),
@@ -655,6 +717,7 @@ def _directional_stats(directional_values: list[dict[str, Any]]) -> dict[str, An
             "slant_left_score_mean": 0.0,
             "directional_asymmetry_mean": 0.0,
             "directional_non_degenerate": False,
+            "move_directional_quality_ok": False,
         }
     dim = len(directional_values[0].get("shift_hist", []))
     shift_hist_mean = [float(sum(float(value.get("shift_hist", [0.0] * dim)[index]) for value in directional_values) / max(1, len(directional_values))) for index in range(dim)]
@@ -665,19 +728,33 @@ def _directional_stats(directional_values: list[dict[str, Any]]) -> dict[str, An
     entropy = [float(value.get("support_shift_entropy", 0.0)) for value in directional_values]
     shift_means = [float(value.get("shift_mean", 0.0)) for value in directional_values]
     shift_stds = [float(value.get("shift_std", 0.0)) for value in directional_values]
-    directional_mass = max(sum(slant_right), sum(slant_left))
-    non_degenerate = bool(directional_mass > 0.0 and (sum(nonzero) / max(1, len(nonzero)) > 0.0 or abs(sum(asym) / max(1, len(asym))) > 0.01))
+    nonzero_mean = float(sum(nonzero) / max(1, len(nonzero)))
+    asym_mean = float(sum(asym) / max(1, len(asym)))
+    entropy_mean = float(sum(entropy) / max(1, len(entropy)))
+    non_degenerate = bool(nonzero_mean > 0.0 and (abs(asym_mean) > 0.0 or entropy_mean > 0.0))
     return {
         "shift_hist_mean": shift_hist_mean,
-        "shift_entropy_mean": float(sum(entropy) / max(1, len(entropy))),
-        "shift_nonzero_fraction_mean": float(sum(nonzero) / max(1, len(nonzero))),
+        "shift_entropy_mean": entropy_mean,
+        "shift_nonzero_fraction_mean": nonzero_mean,
         "shift_mean": float(sum(shift_means) / max(1, len(shift_means))),
         "shift_std": float(sum(shift_stds) / max(1, len(shift_stds))),
         "slant_right_score_mean": float(sum(slant_right) / max(1, len(slant_right))),
         "slant_left_score_mean": float(sum(slant_left) / max(1, len(slant_left))),
-        "directional_asymmetry_mean": float(sum(asym) / max(1, len(asym))),
+        "directional_asymmetry_mean": asym_mean,
         "directional_non_degenerate": bool(non_degenerate),
+        "move_directional_quality_ok": False,
     }
+
+
+def _move_directional_non_degenerate(directional: dict[str, Any], config: dict[str, Any]) -> bool:
+    directional_cf = config.get("directional_shift", {}) if isinstance(config.get("directional_shift"), dict) else {}
+    min_nonzero = float(directional_cf.get("min_nonzero_shift_mass_for_move", 0.05))
+    min_abs_asym = float(directional_cf.get("min_abs_directional_asymmetry_for_move", 0.02))
+    min_entropy = float(directional_cf.get("min_shift_entropy_for_move", 0.05))
+    nonzero = float(directional.get("shift_nonzero_fraction_mean", 0.0))
+    asym = abs(float(directional.get("directional_asymmetry_mean", 0.0)))
+    entropy = float(directional.get("shift_entropy_mean", 0.0))
+    return bool(nonzero >= min_nonzero and (asym >= min_abs_asym or entropy >= min_entropy))
 
 
 def _category_quality(category: str, requested: int, mode_stats: list[dict[str, Any]], category_descs: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
@@ -719,7 +796,9 @@ def _category_quality(category: str, requested: int, mode_stats: list[dict[str, 
         unusable_reasons.append("too_many_label_collapsed_modes")
     directional = _directional_stats([desc["directional"] for desc in category_descs])
     required_directional = [str(value) for value in quality_cf.get("require_directional_non_degenerate_for", [])] if isinstance(quality_cf.get("require_directional_non_degenerate_for", []), list) else []
-    if category in required_directional and not bool(directional.get("directional_non_degenerate", False)):
+    directional_quality_ok = _move_directional_non_degenerate(directional, config)
+    directional["move_directional_quality_ok"] = bool(directional_quality_ok)
+    if category in required_directional and not directional_quality_ok:
         unusable_reasons.append(f"{category.lower()}_directional_degenerate")
     if category in required_directional and effective_modes <= 0:
         unusable_reasons.append(f"{category.lower()}_no_effective_modes")
@@ -779,7 +858,7 @@ def build_instruction_matrix_grammar_prior(items: list[dict[str, Any]], config: 
     strategy_by_category = cfg.get("strategy_by_category", {}) if isinstance(cfg.get("strategy_by_category"), dict) else {}
     for category in sorted(samples_by_category):
         raw_samples = samples_by_category[category]
-        descriptors = [_sample_descriptor(sample["raw_y20"], cfg, vocab) for sample in raw_samples]
+        descriptors = [_sample_descriptor(sample["raw_y20"], cfg, vocab, category=category) for sample in raw_samples]
         if descriptors:
             descriptor_slices = descriptors[0]["descriptor_slices"]
         assigned, centers, requested_modes, effective_modes = _cluster_descriptors([desc["descriptor"] for desc in descriptors], category, cfg)
@@ -812,8 +891,8 @@ def build_instruction_matrix_grammar_prior(items: list[dict[str, Any]], config: 
             basis_label_mass = torch.zeros((0, CANONICAL_SIZE, CANONICAL_SIZE), dtype=torch.float32)
             basis_label_confidence = torch.zeros((0, CANONICAL_SIZE, CANONICAL_SIZE), dtype=torch.float32)
             basis_label_argmax = []
-        directional_shift_stats = _directional_stats([desc["directional"] for desc in descriptors])
         quality_report = _category_quality(category, requested_modes, mode_stats, descriptors, cfg)
+        directional_shift_stats = quality_report.get("directional_shift_stats", _directional_stats([desc["directional"] for desc in descriptors]))
         strategy = "instruction_matrix_grammar_modes_directional" if str(strategy_by_category.get(category, "")).endswith("directional") else "instruction_matrix_grammar_modes"
         actual_effective_modes = int(len(mode_payloads))
         categories[category] = {
@@ -924,6 +1003,23 @@ def inspect_instruction_grammar_prior_category(
     if fg_prob is None or label_prob is None or label_mass is None:
         raise ValueError(f"Instruction grammar prior category {category!r} is missing basis tensors.")
     max_tiles = min(int(entry.get("effective_modes", len(fg_prob))), max(1, int(num_basis_samples)))
+    if max_tiles <= 0:
+        warning = f"category {category!r} has zero visualizable instruction grammar modes."
+        save_json(output_dir / f"{category}_top_row_programs.json", {"category": category, "top_row_programs": entry.get("top_row_programs", [])})
+        save_json(output_dir / f"{category}_top_col_programs.json", {"category": category, "top_col_programs": entry.get("top_col_programs", [])})
+        save_json(output_dir / f"{category}_directional_shift_stats.json", {"category": category, "directional_shift_stats": entry.get("directional_shift_stats", {})})
+        save_json(output_dir / f"{category}_grammar_mode_stats.json", {"category": category, "warning": warning, "quality_report": entry.get("quality_report", {}), "mode_stats": [], "visualized_modes": []})
+        return {
+            "fg_mask": None,
+            "label_argmax": None,
+            "label_confidence": None,
+            "sampled_prior": None,
+            "top_row_programs": output_dir / f"{category}_top_row_programs.json",
+            "top_col_programs": output_dir / f"{category}_top_col_programs.json",
+            "directional_shift_stats": output_dir / f"{category}_directional_shift_stats.json",
+            "mode_stats": output_dir / f"{category}_grammar_mode_stats.json",
+            "warning": warning,
+        }
     labels = [f"m={index}" for index in range(max_tiles)]
     fg_tiles = []
     argmax_tiles = []

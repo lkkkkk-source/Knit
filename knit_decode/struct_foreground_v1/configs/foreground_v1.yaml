@@ -235,6 +235,9 @@ instruction_matrix_grammar_prior:
     enabled: true
     shift_clip: 3
     labels: all
+    min_nonzero_shift_mass_for_move: 0.05
+    min_abs_directional_asymmetry_for_move: 0.02
+    min_shift_entropy_for_move: 0.05
     apply_to_categories:
       - Move1
       - Move2
