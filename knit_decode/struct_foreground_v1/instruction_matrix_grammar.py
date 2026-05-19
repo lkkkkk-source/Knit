@@ -144,8 +144,8 @@ def _entropy_from_counts(counts: Counter[Any]) -> float:
     for value in counts.values():
         prob = float(value) / total
         if prob > 0.0:
-            entropy -= prob * math.log(prob + 1.0e-12)
-    return float(entropy)
+            entropy -= prob * math.log(prob)
+    return float(max(entropy, 0.0))
 
 
 def _entropy_from_probs(values: list[float]) -> float:
