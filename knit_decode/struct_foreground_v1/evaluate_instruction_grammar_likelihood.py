@@ -46,6 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-smoothed-mode-prior", dest="use_smoothed_mode_prior", action="store_true", default=None)
     parser.add_argument("--no-smoothed-mode-prior", dest="use_smoothed_mode_prior", action="store_false")
     parser.add_argument("--compare-raw-calibrated", action="store_true")
+    parser.add_argument("--sweep-calibration", action="store_true")
+    parser.add_argument("--sweep-categories", type=str, default="")
+    parser.add_argument("--write-recommended-config", action="store_true")
     return parser
 
 
@@ -179,6 +182,13 @@ def _mode_pruning_thresholds(config: dict[str, Any]) -> dict[str, float]:
         "max_mode_fraction_warn": float(pruning_cf.get("max_mode_fraction_warn", 0.8)),
         "min_mode_usage_fraction": float(pruning_cf.get("min_mode_usage_fraction", 0.01)),
     }
+
+
+def _mode_usage_cleanup_config(config: dict[str, Any]) -> dict[str, Any]:
+    cf = config.get("instruction_matrix_grammar_prior", {}) if isinstance(config.get("instruction_matrix_grammar_prior", {}), dict) else {}
+    calibration_cf = cf.get("calibration", {}) if isinstance(cf.get("calibration", {}), dict) else {}
+    cleanup_cf = calibration_cf.get("mode_usage_cleanup", {}) if isinstance(calibration_cf.get("mode_usage_cleanup", {}), dict) else {}
+    return cleanup_cf if isinstance(cleanup_cf, dict) else {}
 
 
 def _load_y_for_row(row: dict[str, Any], manifest_root: Path, data_cf: dict[str, Any]) -> tuple[list[list[int]], list[list[int]], bool]:
@@ -779,6 +789,510 @@ def _score_variant(
     return {**score, "fg_modes": fg_modes, "label_modes": label_modes, "priors": priors}
 
 
+def _parse_category_list(text: str) -> list[str]:
+    return [part.strip() for part in str(text).split(",") if part.strip()]
+
+
+def _candidate_values(cleanup_cf: dict[str, Any], section: str, category: str, default: list[float | int]) -> list[float | int]:
+    section_cf = cleanup_cf.get(section, {}) if isinstance(cleanup_cf.get(section, {}), dict) else {}
+    if not bool(section_cf.get("enabled", False)):
+        return default
+    by_category = section_cf.get("candidates_by_category", {}) if isinstance(section_cf.get("candidates_by_category", {}), dict) else {}
+    values = by_category.get(category, default)
+    if not isinstance(values, list) or not values:
+        return default
+    return [value for value in values if value is not None]
+
+
+def _entry_alpha(entry: dict[str, Any]) -> float:
+    return _safe_float(entry.get("label_hist_interpolation_alpha"), 0.0)
+
+
+def _entry_beta(entry: dict[str, Any]) -> float:
+    return _safe_float(entry.get("mode_prior_smoothing_beta"), 0.0)
+
+
+def _calibrate_label_modes_list(label_modes: list[Any], category_hist: list[float], alpha: float) -> list[list[list[list[float]]]]:
+    alpha = min(1.0, max(0.0, float(alpha)))
+    hist = [max(0.0, float(value)) for value in category_hist[:NUM_LABELS]]
+    if len(hist) != NUM_LABELS or sum(hist) <= 0.0:
+        hist = [1.0 / float(NUM_LABELS) for _ in range(NUM_LABELS)]
+    else:
+        total = sum(hist)
+        hist = [value / total for value in hist]
+    calibrated: list[list[list[list[float]]]] = []
+    for mode_index, raw_mode in enumerate(label_modes):
+        tensor = _mode_label_tensor(raw_mode, category="sweep", mode_index=mode_index, source_name="calibration_sweep")
+        out_mode = [[[0.0 for _ in range(CANONICAL_SIZE)] for _ in range(CANONICAL_SIZE)] for _ in range(NUM_LABELS)]
+        for y_pos in range(CANONICAL_SIZE):
+            for x_pos in range(CANONICAL_SIZE):
+                denom = 0.0
+                for label_index in range(NUM_LABELS):
+                    value = (1.0 - alpha) * float(tensor[label_index][y_pos][x_pos]) + alpha * float(hist[label_index])
+                    out_mode[label_index][y_pos][x_pos] = value
+                    denom += value
+                if denom <= 0.0:
+                    for label_index in range(NUM_LABELS):
+                        out_mode[label_index][y_pos][x_pos] = 1.0 / float(NUM_LABELS)
+                else:
+                    for label_index in range(NUM_LABELS):
+                        out_mode[label_index][y_pos][x_pos] = float(out_mode[label_index][y_pos][x_pos]) / denom
+        calibrated.append(out_mode)
+    return calibrated
+
+
+def _subset_by_indices(values: list[Any], indices: list[int]) -> list[Any]:
+    return [values[index] for index in indices if 0 <= int(index) < len(values)]
+
+
+def _subset_priors_from_counts(entry: dict[str, Any], subset: list[int], beta: float) -> list[float]:
+    counts_raw = _to_list(entry.get("mode_num_samples", []))
+    mode_count = int(entry.get("effective_modes", len(counts_raw) if isinstance(counts_raw, list) else 0))
+    if not isinstance(counts_raw, list) or len(counts_raw) != mode_count:
+        return [1.0 / float(max(1, len(subset))) for _ in subset]
+    counts = [max(0.0, _safe_float(counts_raw[index])) for index in subset if 0 <= int(index) < len(counts_raw)]
+    if not counts:
+        return []
+    beta = max(0.0, float(beta))
+    denom = sum(counts) + beta * float(len(counts))
+    if denom <= 0.0:
+        return [1.0 / float(len(counts)) for _ in counts]
+    priors = [(count + beta) / denom for count in counts]
+    total = sum(priors)
+    return [float(value) / total for value in priors] if total > 0.0 else [1.0 / float(len(counts)) for _ in counts]
+
+
+def _top_used_subset(category_rows: list[dict[str, Any]], mode_count: int, reduced_count: int) -> list[int]:
+    counts = Counter(int(row["best_mode_id"]) for row in category_rows)
+    ranked = sorted(range(mode_count), key=lambda mode_id: (-int(counts.get(mode_id, 0)), mode_id))
+    keep = max(1, min(int(reduced_count), mode_count))
+    return sorted(ranked[:keep])
+
+
+def _usage_stats_from_mode_ids(mode_ids: list[int], mode_count: int, cleanup_cf: dict[str, Any]) -> dict[str, Any]:
+    counts = Counter(int(mode_id) for mode_id in mode_ids)
+    total = sum(counts.values())
+    entropy = _entropy_from_counts(counts)
+    max_fraction = max((count / float(total) for count in counts.values()), default=0.0)
+    unused = [mode_id for mode_id in range(mode_count) if counts.get(mode_id, 0) == 0]
+    used_modes = int(mode_count - len(unused))
+    unused_fraction = float(len(unused) / float(max(1, mode_count)))
+    normalized_entropy = float(entropy / math.log(mode_count)) if mode_count > 1 else 0.0
+    max_mode_fraction_target = float(cleanup_cf.get("max_mode_fraction_target", 0.8))
+    min_used_mode_fraction_target = float(cleanup_cf.get("min_used_mode_fraction_target", 0.5))
+    used_mode_fraction = float(used_modes / float(max(1, mode_count)))
+    risk_flags: list[str] = []
+    if max_fraction > max_mode_fraction_target:
+        risk_flags.append("max_mode_fraction_gt_0.8")
+    if used_mode_fraction < min_used_mode_fraction_target:
+        risk_flags.append("used_modes_lt_half_k")
+    return {
+        "support": int(total),
+        "mode_count": int(mode_count),
+        "used_modes": int(used_modes),
+        "used_mode_fraction": float(used_mode_fraction),
+        "unused_modes": unused,
+        "unused_fraction": float(unused_fraction),
+        "max_mode_fraction": float(max_fraction),
+        "mode_usage_entropy": float(entropy),
+        "normalized_mode_usage_entropy": float(normalized_entropy),
+        "risk_flags": risk_flags,
+        "counts": {str(key): int(value) for key, value in sorted(counts.items())},
+    }
+
+
+def _posterior_assignment(score: dict[str, Any]) -> int:
+    posterior = score.get("mode_posterior", [])
+    if isinstance(posterior, list) and posterior:
+        return int(max(range(len(posterior)), key=lambda index: float(posterior[index])))
+    return int(score.get("best_mode_id", 0))
+
+
+def _candidate_summary(
+    *,
+    category: str,
+    alpha: float,
+    beta: float,
+    mode_count: int,
+    mode_subset: list[int],
+    sample_scores: list[dict[str, Any]],
+    cleanup_cf: dict[str, Any],
+    baseline_mix: float,
+    baseline_label: float,
+) -> dict[str, Any]:
+    mode_ids = [_posterior_assignment(row) for row in sample_scores]
+    usage = _usage_stats_from_mode_ids(mode_ids, mode_count, cleanup_cf)
+    mix = _mean([float(row["mixture_nll_per_cell"]) for row in sample_scores])
+    label = _mean([float(row["label_nll_per_fg"]) for row in sample_scores])
+    mask = _mean([float(row["mask_nll_per_cell"]) for row in sample_scores])
+    used_mode_fraction = float(usage["used_mode_fraction"])
+    max_mode_fraction = float(usage["max_mode_fraction"])
+    passes_likelihood = bool(mix <= baseline_mix + 0.005 and label <= baseline_label + 0.01)
+    passes_usage = bool(not usage["risk_flags"])
+    score = float(mix + 0.05 * max(0.0, max_mode_fraction - 0.8) + 0.05 * max(0.0, 0.5 - used_mode_fraction))
+    return {
+        "category": category,
+        "alpha": float(alpha),
+        "beta": float(beta),
+        "mode_count": int(mode_count),
+        "mode_subset": " ".join(str(value) for value in mode_subset),
+        "mixture_nll_per_cell": float(mix),
+        "mask_nll_per_cell": float(mask),
+        "label_nll_per_fg": float(label),
+        "max_mode_fraction": max_mode_fraction,
+        "used_modes": int(usage["used_modes"]),
+        "used_mode_fraction": used_mode_fraction,
+        "unused_fraction": float(usage["unused_fraction"]),
+        "mode_usage_entropy": float(usage["mode_usage_entropy"]),
+        "normalized_mode_usage_entropy": float(usage["normalized_mode_usage_entropy"]),
+        "risk_flags": " ".join(str(flag) for flag in usage["risk_flags"]),
+        "passes_likelihood_gate": passes_likelihood,
+        "passes_usage_gate": passes_usage,
+        "score": score,
+        "assignment_rule": "posterior_argmax",
+        "counts_json": json.dumps(usage["counts"], ensure_ascii=False),
+        "mode_subset_list": mode_subset,
+    }
+
+
+def _classify_category_decision(category: str, selected: dict[str, Any] | None, before: dict[str, Any] | None, cleanup_cf: dict[str, Any]) -> dict[str, Any]:
+    if selected is None:
+        return {"decision": "needs_inspect", "reason": "no_candidate_selected"}
+    if not bool(selected.get("passes_likelihood_gate", False)):
+        return {"decision": "needs_inspect", "reason": "no_candidate_passes_likelihood_gate"}
+    allow_unimodal = cleanup_cf.get("allow_justified_unimodal_by_category", {})
+    allow_unimodal = allow_unimodal if isinstance(allow_unimodal, dict) else {}
+    mode_count = int(selected.get("mode_count", 0))
+    before_mix = float(before.get("mixture_nll_per_cell", LARGE_PENALTY)) if isinstance(before, dict) else LARGE_PENALTY
+    selected_mix = float(selected.get("mixture_nll_per_cell", LARGE_PENALTY))
+    selected_label = float(selected.get("label_nll_per_fg", LARGE_PENALTY))
+    before_label = float(before.get("label_nll_per_fg", LARGE_PENALTY)) if isinstance(before, dict) else LARGE_PENALTY
+    likelihood_stable = bool(selected_mix <= before_mix + 0.005 and selected_label <= before_label + 0.01)
+    usage_ok = bool(selected.get("passes_usage_gate", False))
+    if category == "Links1":
+        if bool(allow_unimodal.get(category, False)) and mode_count <= 2 and likelihood_stable:
+            return {
+                "decision": "justify_unimodal",
+                "justified_low_mode_diversity": True,
+                "reason": "reduced_mode_count_1_or_2_preserves_likelihood",
+            }
+        if usage_ok:
+            return {"decision": "keep_modes" if mode_count >= int(before.get("mode_count", mode_count)) else "reduce_modes", "reason": "usage_gate_passes"}
+        if selected_mix > before_mix + 0.005:
+            return {"decision": "needs_inspect", "reason": "reduced_modes_worsen_mixture_nll"}
+        return {"decision": "keep_modes", "reason": "dominant_mode_requires_beta_or_smoothing"}
+    if category in {"Cable1", "Tuck"}:
+        before_count = int(before.get("mode_count", mode_count)) if isinstance(before, dict) else mode_count
+        if mode_count < before_count and likelihood_stable:
+            return {"decision": "reduce_modes", "reason": "reduced_mode_count_preserves_likelihood"}
+        if not usage_ok and likelihood_stable:
+            return {"decision": "keep_modes", "reason": "modes_are_rare_but_useful"}
+        if usage_ok:
+            return {"decision": "keep_modes" if mode_count == before_count else "reduce_modes", "reason": "usage_gate_passes"}
+    return {"decision": "keep_modes" if usage_ok else "needs_inspect", "reason": "joint_likelihood_usage_selection"}
+
+
+def _format_yaml_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _write_recommended_config_patch(path: Path, recommendations: dict[str, Any]) -> None:
+    lines = [
+        "# Diagnostic recommendation only. Do not apply without explicit review.",
+        "instruction_matrix_grammar_prior:",
+        "  mode_count_by_category:",
+    ]
+    mode_updates = {
+        category: payload.get("mode_count")
+        for category, payload in sorted(recommendations.items())
+        if bool(payload.get("passes_likelihood_gate", False))
+        and payload.get("recommended_mode_count") is not None
+        and payload.get("decision") in {"reduce_modes", "justify_unimodal"}
+    }
+    if mode_updates:
+        for category, value in mode_updates.items():
+            lines.append(f"    {category}: {_format_yaml_value(value)}")
+    else:
+        lines.append("    {}")
+    lines.extend(
+        [
+            "  calibration:",
+            "    label_hist_interpolation:",
+            "      alpha_by_category:",
+        ]
+    )
+    alpha_updates = {
+        category: payload.get("alpha")
+        for category, payload in sorted(recommendations.items())
+        if bool(payload.get("passes_likelihood_gate", False)) and payload.get("alpha") is not None and payload.get("decision") != "needs_inspect"
+    }
+    if alpha_updates:
+        for category, value in alpha_updates.items():
+            lines.append(f"        {category}: {_format_yaml_value(value)}")
+    else:
+        lines.append("        {}")
+    lines.extend(["    mode_prior_smoothing:", "      beta_by_category:"])
+    beta_updates = {
+        category: payload.get("beta")
+        for category, payload in sorted(recommendations.items())
+        if bool(payload.get("passes_likelihood_gate", False)) and payload.get("beta") is not None and payload.get("decision") != "needs_inspect"
+    }
+    if beta_updates:
+        for category, value in beta_updates.items():
+            lines.append(f"        {category}: {_format_yaml_value(value)}")
+    else:
+        lines.append("        {}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _run_calibration_sweep(
+    *,
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    categories: dict[str, Any],
+    eval_samples: list[dict[str, Any]],
+    primary_rows: list[dict[str, Any]],
+    mode_usage_payload: dict[str, Any],
+    primary_summary: dict[str, Any],
+) -> dict[str, Any]:
+    cleanup_cf = _mode_usage_cleanup_config(config)
+    requested = _parse_category_list(str(args.sweep_categories))
+    if not requested:
+        risk_categories = cleanup_cf.get("risk_categories", {}) if isinstance(cleanup_cf.get("risk_categories", {}), dict) else {}
+        requested = [category for category, enabled in risk_categories.items() if bool(enabled)]
+    requested = [category for category in requested if category in categories]
+    results: list[dict[str, Any]] = []
+    recommendations: dict[str, Any] = {}
+    before_after_rows: list[dict[str, Any]] = []
+    val_tuned_risk = str(args.split_name).lower() == "val"
+    for category in requested:
+        entry = categories.get(category)
+        if not isinstance(entry, dict):
+            continue
+        cat_samples = [sample for sample in eval_samples if str(sample["category"]) == category]
+        cat_primary_rows = [row for row in primary_rows if str(row["category"]) == category]
+        if not cat_samples or not cat_primary_rows:
+            continue
+        raw_fg_modes, raw_label_modes, _ = _validate_modes(
+            entry,
+            category,
+            "instruction_matrix_grammar_prior",
+            use_calibrated_label_prob=False,
+            use_smoothed_mode_prior=False,
+        )
+        mode_count_full = len(raw_fg_modes)
+        category_hist = _to_list(entry.get("category_label_hist_16", []))
+        if not isinstance(category_hist, list) or len(category_hist) != NUM_LABELS:
+            category_hist = [1.0 / float(NUM_LABELS) for _ in range(NUM_LABELS)]
+        current_alpha = _entry_alpha(entry)
+        current_beta = _entry_beta(entry)
+        alpha_values = [float(value) for value in _candidate_values(cleanup_cf, "alpha_sweep", category, [current_alpha])]
+        beta_values = [float(value) for value in _candidate_values(cleanup_cf, "beta_sweep", category, [current_beta])]
+        mode_values = [max(1, min(mode_count_full, int(value))) for value in _candidate_values(cleanup_cf, "mode_count_sweep", category, [mode_count_full])]
+        if mode_count_full not in mode_values:
+            mode_values.append(mode_count_full)
+        mode_values = sorted(set(mode_values))
+        cat_before = {
+            "category": category,
+            "stage": "before",
+            "alpha": current_alpha,
+            "beta": current_beta,
+            "mode_count": mode_count_full,
+            "mode_subset": " ".join(str(index) for index in range(mode_count_full)),
+            "mixture_nll_per_cell": _mean([float(row["mixture_nll_per_cell"]) for row in cat_primary_rows]),
+            "mask_nll_per_cell": _mean([float(row["mask_nll_per_cell"]) for row in cat_primary_rows]),
+            "label_nll_per_fg": _mean([float(row["label_nll_per_fg"]) for row in cat_primary_rows]),
+            "max_mode_fraction": float(mode_usage_payload.get(category, {}).get("max_mode_fraction", 0.0)),
+            "used_modes": int(mode_usage_payload.get(category, {}).get("used_modes", 0)),
+            "unused_fraction": float(mode_usage_payload.get(category, {}).get("unused_fraction", 0.0)),
+            "risk_flags": " ".join(mode_usage_payload.get(category, {}).get("risk_flags", [])),
+        }
+        before_after_rows.append(cat_before)
+        for alpha in sorted(set(alpha_values)):
+            label_modes = _calibrate_label_modes_list(raw_label_modes, category_hist, alpha)
+            for beta in sorted(set(beta_values)):
+                for candidate_count in sorted(set(mode_values)):
+                    subset = _top_used_subset(cat_primary_rows, mode_count_full, candidate_count)
+                    if not subset:
+                        continue
+                    fg_subset = _subset_by_indices(raw_fg_modes, subset)
+                    label_subset = _subset_by_indices(label_modes, subset)
+                    priors = _subset_priors_from_counts(entry, subset, beta)
+                    sample_scores: list[dict[str, Any]] = []
+                    for sample in cat_samples:
+                        score = _score_modes(
+                            sample["y20"],
+                            sample["mask20"],
+                            fg_subset,
+                            label_subset,
+                            priors,
+                            category=category,
+                            source_name="calibration_sweep",
+                            eps=float(args.eps),
+                            label_smoothing=float(args.label_smoothing),
+                            mask_smoothing=float(args.mask_smoothing),
+                            w_mask=float(args.w_mask),
+                            w_label=float(args.w_label),
+                        )
+                        sample_scores.append(score)
+                    candidate = _candidate_summary(
+                        category=category,
+                        alpha=alpha,
+                        beta=beta,
+                        mode_count=len(subset),
+                        mode_subset=subset,
+                        sample_scores=sample_scores,
+                        cleanup_cf=cleanup_cf,
+                        baseline_mix=float(cat_before["mixture_nll_per_cell"]),
+                        baseline_label=float(cat_before["label_nll_per_fg"]),
+                    )
+                    results.append(candidate)
+        cat_results = [row for row in results if str(row["category"]) == category]
+        feasible = [row for row in cat_results if bool(row["passes_likelihood_gate"])]
+        usage_feasible = [row for row in feasible if bool(row["passes_usage_gate"])]
+        pool = usage_feasible or feasible or cat_results
+        selected = min(pool, key=lambda row: (float(row["score"]), float(row["mixture_nll_per_cell"]), float(row["label_nll_per_fg"]))) if pool else None
+        decision = _classify_category_decision(category, selected, cat_before, cleanup_cf)
+        if selected is not None:
+            rec = {
+                **{key: _json_safe(value) for key, value in selected.items() if key != "mode_subset_list"},
+                **decision,
+                "recommended_mode_count": int(selected["mode_count"]) if int(selected["mode_count"]) != mode_count_full else None,
+                "val_tuned_risk": bool(val_tuned_risk),
+            }
+            recommendations[category] = rec
+            before_after_rows.append(
+                {
+                    "category": category,
+                    "stage": "after_recommended",
+                    "alpha": float(selected["alpha"]),
+                    "beta": float(selected["beta"]),
+                    "mode_count": int(selected["mode_count"]),
+                    "mode_subset": str(selected["mode_subset"]),
+                    "mixture_nll_per_cell": float(selected["mixture_nll_per_cell"]),
+                    "mask_nll_per_cell": float(selected["mask_nll_per_cell"]),
+                    "label_nll_per_fg": float(selected["label_nll_per_fg"]),
+                    "max_mode_fraction": float(selected["max_mode_fraction"]),
+                    "used_modes": int(selected["used_modes"]),
+                    "unused_fraction": float(selected["unused_fraction"]),
+                    "risk_flags": str(selected["risk_flags"]),
+                }
+            )
+    fieldnames = [
+        "category",
+        "alpha",
+        "beta",
+        "mode_count",
+        "mode_subset",
+        "mixture_nll_per_cell",
+        "mask_nll_per_cell",
+        "label_nll_per_fg",
+        "max_mode_fraction",
+        "used_modes",
+        "unused_fraction",
+        "mode_usage_entropy",
+        "normalized_mode_usage_entropy",
+        "risk_flags",
+        "passes_likelihood_gate",
+        "passes_usage_gate",
+        "score",
+        "assignment_rule",
+        "counts_json",
+    ]
+    _write_csv(args.output_dir / "calibration_sweep_results.csv", [{key: row.get(key, "") for key in fieldnames} for row in results], fieldnames)
+    _write_csv(
+        args.output_dir / "mode_usage_before_after.csv",
+        before_after_rows,
+        ["category", "stage", "alpha", "beta", "mode_count", "mode_subset", "mixture_nll_per_cell", "mask_nll_per_cell", "label_nll_per_fg", "max_mode_fraction", "used_modes", "unused_fraction", "risk_flags"],
+    )
+    selected_by_category = {category: payload for category, payload in recommendations.items() if payload.get("decision") != "needs_inspect" and bool(payload.get("passes_likelihood_gate", False))}
+    total_support = max(1, len(primary_rows))
+    replaced_categories = set(selected_by_category)
+    remaining_rows = [row for row in primary_rows if str(row["category"]) not in replaced_categories]
+    estimated_mix_sum = sum(float(row["mixture_nll_per_cell"]) for row in remaining_rows)
+    estimated_mask_sum = sum(float(row["mask_nll_per_cell"]) for row in remaining_rows)
+    estimated_label_sum = sum(float(row["label_nll_per_fg"]) for row in remaining_rows)
+    for category, payload in selected_by_category.items():
+        support = len([row for row in primary_rows if str(row["category"]) == category])
+        estimated_mix_sum += float(payload.get("mixture_nll_per_cell", 0.0)) * support
+        estimated_mask_sum += float(payload.get("mask_nll_per_cell", 0.0)) * support
+        estimated_label_sum += float(payload.get("label_nll_per_fg", 0.0)) * support
+    estimated_global = {
+        "mean_mixture_nll_per_cell": float(estimated_mix_sum / float(total_support)),
+        "mean_mask_nll_per_cell": float(estimated_mask_sum / float(total_support)),
+        "mean_label_nll_per_fg": float(estimated_label_sum / float(total_support)),
+        "passes_current_run_likelihood_gate": bool(
+            estimated_mix_sum / float(total_support) <= float(primary_summary.get("mean_mixture_nll_per_cell", LARGE_PENALTY)) + 0.005
+            and estimated_label_sum / float(total_support) <= float(primary_summary.get("mean_label_nll_per_fg", LARGE_PENALTY)) + 0.01
+        ),
+    }
+    sweep_summary = {
+        "split_name": str(args.split_name),
+        "diagnostic_only": bool(cleanup_cf.get("diagnostic_only", True)),
+        "val_tuned_risk": bool(val_tuned_risk),
+        "categories": requested,
+        "num_candidates": int(len(results)),
+        "global_current": {
+            "mean_mixture_nll_per_cell": float(primary_summary.get("mean_mixture_nll_per_cell", 0.0)),
+            "mean_label_nll_per_fg": float(primary_summary.get("mean_label_nll_per_fg", 0.0)),
+        },
+        "estimated_global_after_recommended": estimated_global,
+        "recommendations": recommendations,
+        "decisions": {category: {"decision": payload.get("decision"), "reason": payload.get("reason"), "justified_low_mode_diversity": payload.get("justified_low_mode_diversity", False)} for category, payload in recommendations.items()},
+    }
+    save_json(args.output_dir / "calibration_sweep_summary.json", _json_safe(sweep_summary))
+    save_json(args.output_dir / "recommended_calibration_by_category.json", _json_safe(recommendations))
+    if bool(args.write_recommended_config):
+        _write_recommended_config_patch(args.output_dir / "recommended_config_patch.yaml", recommendations)
+    lines = [
+        "# Calibration Sweep Summary",
+        "",
+        f"- split_name: {args.split_name}",
+        f"- diagnostic_only: {bool(cleanup_cf.get('diagnostic_only', True))}",
+        f"- val_tuned_risk: {val_tuned_risk}",
+        f"- num_candidates: {len(results)}",
+        f"- estimated_global_after_recommended_mixture: {estimated_global['mean_mixture_nll_per_cell']:.6f}",
+        f"- estimated_global_after_recommended_label: {estimated_global['mean_label_nll_per_fg']:.6f}",
+        f"- estimated_global_passes_current_run_likelihood_gate: {estimated_global['passes_current_run_likelihood_gate']}",
+        "",
+        "## Decisions",
+        "",
+    ]
+    for category in requested:
+        payload = recommendations.get(category, {})
+        lines.append(
+            "- {category}: decision={decision} reason={reason} alpha={alpha} beta={beta} mode_count={mode_count} mix={mix} label={label} risks={risks}".format(
+                category=category,
+                decision=payload.get("decision", "none"),
+                reason=payload.get("reason", "none"),
+                alpha=payload.get("alpha", "n/a"),
+                beta=payload.get("beta", "n/a"),
+                mode_count=payload.get("mode_count", "n/a"),
+                mix=payload.get("mixture_nll_per_cell", "n/a"),
+                label=payload.get("label_nll_per_fg", "n/a"),
+                risks=payload.get("risk_flags", ""),
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- Candidates are post-hoc diagnostics over the cached grammar prior; they do not rebuild cache or alter the main config.",
+            "- Likelihood gates use current per-category likelihood plus the requested tolerances before applying mode-usage scoring.",
+            "- If split_name is val, recommendations are marked val_tuned_risk and should be verified on a separate split before treating them as final.",
+        ]
+    )
+    (args.output_dir / "calibration_sweep_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return sweep_summary
+
+
 def _comparison_summary(rows: list[dict[str, Any]], prior_categories: dict[str, Any], thresholds: dict[str, float]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for variant in sorted({str(row["variant"]) for row in rows}):
@@ -847,6 +1361,7 @@ def main(argv: list[str] | None = None) -> int:
     per_sample_rows: list[dict[str, Any]] = []
     baseline_sample_rows: list[dict[str, Any]] = []
     comparison_sample_rows: list[dict[str, Any]] = []
+    eval_samples: list[dict[str, Any]] = []
     skipped_unknown_category = 0
     skipped_no_modes = 0
     empty_foreground_count = 0
@@ -882,6 +1397,7 @@ def main(argv: list[str] | None = None) -> int:
         y20, mask20, is_empty = _load_y_for_row(row, manifest_root, data_cf)
         if is_empty:
             empty_foreground_count += 1
+        eval_samples.append({"sample_id": sample_id, "category": category, "y20": y20, "mask20": mask20})
         primary = _score_variant(
             y20,
             mask20,
@@ -1066,6 +1582,23 @@ def main(argv: list[str] | None = None) -> int:
             "use_smoothed_mode_prior": bool(args.use_smoothed_mode_prior),
         },
     }
+    if args.sweep_calibration:
+        sweep_summary = _run_calibration_sweep(
+            args=args,
+            config=config,
+            categories=categories,
+            eval_samples=eval_samples,
+            primary_rows=per_sample_rows,
+            mode_usage_payload=mode_usage_payload,
+            primary_summary=summary,
+        )
+        summary["calibration_sweep"] = {
+            "enabled": True,
+            "summary_path": str(args.output_dir / "calibration_sweep_summary.json"),
+            "recommended_config_patch_path": str(args.output_dir / "recommended_config_patch.yaml") if bool(args.write_recommended_config) else None,
+            "val_tuned_risk": bool(sweep_summary.get("val_tuned_risk", False)),
+            "decisions": sweep_summary.get("decisions", {}),
+        }
 
     save_json(args.output_dir / "summary.json", _json_safe(summary))
     save_jsonl(args.output_dir / "per_sample_likelihoods.jsonl", [_json_safe(row) for row in per_sample_rows])
@@ -1085,6 +1618,11 @@ def main(argv: list[str] | None = None) -> int:
         baseline_comparison_rows,
         ["baseline", "support", "mean_mixture_nll_per_cell", "mean_mask_nll_per_cell", "mean_label_nll_per_fg", "delta_vs_instruction_mixture_nll_per_cell", "instruction_improves"],
     )
+    with (args.output_dir / "baseline_comparison.md").open("a", encoding="utf-8") as handle:
+        handle.write("\n## Notes\n\n")
+        handle.write("- calibrated prior is evaluated as full generative prior.\n")
+        handle.write("- label_only rows are diagnostic only and do not model foreground support.\n")
+        handle.write("- B0.6.4 decision should rely on likelihood and mode usage jointly.\n")
     if calibration_comparison_rows:
         _write_csv(
             args.output_dir / "calibration_comparison.csv",
@@ -1173,7 +1711,11 @@ def main(argv: list[str] | None = None) -> int:
         "",
         "## Baseline Comparison",
         "",
+        "Note: calibrated prior is evaluated as full generative prior.",
         "Note: label_only rows are diagnostic only and do not model foreground support.",
+        "Note: mode_usage risks should be interpreted jointly with likelihood.",
+        "Note: unused_modes on small val can be benign; high max_mode_fraction can indicate natural unimodality or mode collapse.",
+        "Note: B0.6.4 decision should rely on likelihood + usage jointly.",
         "",
     ]
     for row in baseline_comparison_rows:

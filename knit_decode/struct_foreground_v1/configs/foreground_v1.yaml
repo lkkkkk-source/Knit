@@ -293,6 +293,41 @@ instruction_matrix_grammar_prior:
       max_unused_fraction_warn: 0.5
       max_mode_fraction_warn: 0.8
       diagnostic_only: true
+    mode_usage_cleanup:
+      enabled: true
+      diagnostic_only: true
+      risk_categories:
+        Cable1: true
+        Links1: true
+        Tuck: true
+      suggested_mode_count_by_category:
+        Cable1: null
+        Links1: null
+        Tuck: null
+      max_mode_fraction_target: 0.8
+      min_used_mode_fraction_target: 0.5
+      allow_justified_unimodal_by_category:
+        Links1: true
+        Tuck: false
+        Cable1: false
+      mode_count_sweep:
+        enabled: true
+        candidates_by_category:
+          Cable1: [6, 8, 10, 12]
+          Links1: [1, 2, 3, 4]
+          Tuck: [3, 4, 6, 8]
+      alpha_sweep:
+        enabled: true
+        candidates_by_category:
+          Cable1: [0.10, 0.15, 0.20, 0.25]
+          Links1: [0.25, 0.35, 0.45, 0.55]
+          Tuck: [0.15, 0.25, 0.35, 0.45]
+      beta_sweep:
+        enabled: true
+        candidates_by_category:
+          Cable1: [1.0, 2.0, 4.0]
+          Links1: [2.0, 4.0, 8.0]
+          Tuck: [2.0, 4.0, 8.0]
     save_raw_label_prob: true
     save_calibrated_label_prob: true
   evaluate_instruction_grammar_likelihood:
