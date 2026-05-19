@@ -264,6 +264,40 @@ instruction_matrix_grammar_prior:
     max_label_collapse_fraction_default: 0.75
     require_directional_non_degenerate_for:
       - Move1
+  calibration:
+    enabled: true
+    label_hist_interpolation:
+      enabled: true
+      alpha_default: 0.2
+      alpha_by_category:
+        Links1: 0.35
+        Links2: 0.35
+        Tuck: 0.25
+        Cable1: 0.15
+        Cable2: 0.15
+        Move1: 0.15
+        Move2: 0.15
+        Mesh: 0.20
+        Hem: 0.25
+        Miss: 0.20
+    mode_prior_smoothing:
+      enabled: true
+      beta_default: 1.0
+      beta_by_category:
+        Links1: 2.0
+        Links2: 2.0
+        Tuck: 2.0
+    mode_pruning:
+      enabled: false
+      min_mode_usage_fraction: 0.01
+      max_unused_fraction_warn: 0.5
+      max_mode_fraction_warn: 0.8
+      diagnostic_only: true
+    save_raw_label_prob: true
+    save_calibrated_label_prob: true
+  evaluate_instruction_grammar_likelihood:
+    use_calibrated_label_prob: true
+    use_smoothed_mode_prior: true
   strategy_by_category:
     Cable1: grammar_modes
     Cable2: grammar_modes

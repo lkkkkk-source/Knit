@@ -62,6 +62,32 @@ DEFAULT_INSTRUCTION_GRAMMAR_CONFIG: dict[str, Any] = {
         "max_label_collapse_fraction_default": 0.75,
         "require_directional_non_degenerate_for": ["Move1"],
     },
+    "calibration": {
+        "enabled": True,
+        "label_hist_interpolation": {
+            "enabled": True,
+            "alpha_default": 0.2,
+            "alpha_by_category": {},
+        },
+        "mode_prior_smoothing": {
+            "enabled": True,
+            "beta_default": 1.0,
+            "beta_by_category": {},
+        },
+        "mode_pruning": {
+            "enabled": False,
+            "min_mode_usage_fraction": 0.01,
+            "max_unused_fraction_warn": 0.5,
+            "max_mode_fraction_warn": 0.8,
+            "diagnostic_only": True,
+        },
+        "save_raw_label_prob": True,
+        "save_calibrated_label_prob": True,
+    },
+    "evaluate_instruction_grammar_likelihood": {
+        "use_calibrated_label_prob": True,
+        "use_smoothed_mode_prior": True,
+    },
     "strategy_by_category": {},
 }
 
@@ -705,6 +731,66 @@ def _aggregate_mode(samples: list[dict[str, Any]], mode_index: int, config: dict
     }
 
 
+def _category_label_hist_16(raw_samples: list[dict[str, Any]]) -> list[float]:
+    counts = [0.0 for _ in range(NUM_LABELS)]
+    for sample in raw_samples:
+        raw = _as_grid(sample["raw_y20"], context=f"sample[{sample.get('sample_id')}].raw_y20")
+        for row in raw:
+            for value in row:
+                label = int(value)
+                if 1 <= label <= NUM_LABELS:
+                    counts[label - 1] += 1.0
+    total = float(sum(counts))
+    if total <= 0.0:
+        return [1.0 / float(NUM_LABELS) for _ in range(NUM_LABELS)]
+    return [float(value) / total for value in counts]
+
+
+def _config_category_float(config: dict[str, Any], section: str, value_key: str, by_category_key: str, category: str, default: float) -> float:
+    calibration_cf = config.get("calibration", {}) if isinstance(config.get("calibration"), dict) else {}
+    section_cf = calibration_cf.get(section, {}) if isinstance(calibration_cf.get(section), dict) else {}
+    by_category = section_cf.get(by_category_key, {}) if isinstance(section_cf.get(by_category_key), dict) else {}
+    if category in by_category:
+        return float(by_category[category])
+    return float(section_cf.get(value_key, default))
+
+
+def _mode_priors_from_counts(mode_num_samples: list[int], beta: float) -> tuple[list[float], list[float]]:
+    k_modes = len(mode_num_samples)
+    if k_modes <= 0:
+        return [], []
+    counts = [max(0.0, float(value)) for value in mode_num_samples]
+    total = float(sum(counts))
+    if total <= 0.0:
+        raw = [1.0 / float(k_modes) for _ in range(k_modes)]
+    else:
+        raw = [float(value) / total for value in counts]
+    beta = max(0.0, float(beta))
+    smooth_total = total + beta * float(k_modes)
+    if smooth_total <= 0.0:
+        smoothed = [1.0 / float(k_modes) for _ in range(k_modes)]
+    else:
+        smoothed = [(float(value) + beta) / smooth_total for value in counts]
+    raw_sum = sum(raw)
+    smooth_sum = sum(smoothed)
+    raw = [float(value) / raw_sum for value in raw] if raw_sum > 0.0 else [1.0 / float(k_modes) for _ in range(k_modes)]
+    smoothed = [float(value) / smooth_sum for value in smoothed] if smooth_sum > 0.0 else [1.0 / float(k_modes) for _ in range(k_modes)]
+    return raw, smoothed
+
+
+def _calibrate_label_prob_tensor(label_prob: Any, category_hist: list[float], alpha: float) -> Any:
+    torch = _require_torch()
+    tensor = label_prob.detach().clone().to(dtype=getattr(torch, "float32")) if hasattr(label_prob, "detach") else torch.tensor(label_prob, dtype=getattr(torch, "float32"))
+    if len(tuple(int(dim) for dim in tensor.shape)) != 4 or tuple(int(dim) for dim in tensor.shape)[1:] != (NUM_LABELS, CANONICAL_SIZE, CANONICAL_SIZE):
+        raise ValueError(f"basis_label_prob_16 must have shape [K,16,20,20], got {tuple(int(dim) for dim in tensor.shape)}.")
+    hist_tensor = torch.tensor([float(value) for value in category_hist], dtype=tensor.dtype).view(1, NUM_LABELS, 1, 1)
+    alpha = min(1.0, max(0.0, float(alpha)))
+    calibrated = (1.0 - alpha) * tensor + alpha * hist_tensor
+    denom = calibrated.sum(dim=1, keepdim=True).clamp_min(1.0e-12)
+    calibrated = calibrated / denom
+    return calibrated.to(dtype=label_prob.dtype) if hasattr(label_prob, "dtype") else calibrated
+
+
 def _directional_stats(directional_values: list[dict[str, Any]]) -> dict[str, Any]:
     if not directional_values:
         return {
@@ -895,6 +981,28 @@ def build_instruction_matrix_grammar_prior(items: list[dict[str, Any]], config: 
         directional_shift_stats = quality_report.get("directional_shift_stats", _directional_stats([desc["directional"] for desc in descriptors]))
         strategy = "instruction_matrix_grammar_modes_directional" if str(strategy_by_category.get(category, "")).endswith("directional") else "instruction_matrix_grammar_modes"
         actual_effective_modes = int(len(mode_payloads))
+        calibration_cf = cfg.get("calibration", {}) if isinstance(cfg.get("calibration"), dict) else {}
+        label_calibration_cf = calibration_cf.get("label_hist_interpolation", {}) if isinstance(calibration_cf.get("label_hist_interpolation"), dict) else {}
+        prior_smoothing_cf = calibration_cf.get("mode_prior_smoothing", {}) if isinstance(calibration_cf.get("mode_prior_smoothing"), dict) else {}
+        calibration_enabled = bool(calibration_cf.get("enabled", False))
+        label_calibration_enabled = bool(calibration_enabled and label_calibration_cf.get("enabled", False))
+        mode_prior_smoothing_enabled = bool(calibration_enabled and prior_smoothing_cf.get("enabled", False))
+        category_label_hist_16 = _category_label_hist_16(raw_samples)
+        label_alpha = _config_category_float(cfg, "label_hist_interpolation", "alpha_default", "alpha_by_category", category, 0.2)
+        mode_prior_beta = _config_category_float(cfg, "mode_prior_smoothing", "beta_default", "beta_by_category", category, 1.0)
+        if not label_calibration_enabled:
+            label_alpha = 0.0
+        if not mode_prior_smoothing_enabled:
+            mode_prior_beta = 0.0
+        basis_label_prob_16_raw = basis_label_prob_16
+        basis_label_prob_16_calibrated = _calibrate_label_prob_tensor(basis_label_prob_16_raw, category_label_hist_16, label_alpha) if actual_effective_modes > 0 else basis_label_prob_16_raw
+        basis_label_prob_16_active = basis_label_prob_16_calibrated if label_calibration_enabled else basis_label_prob_16_raw
+        mode_num_samples = [int(sum(1 for label in assigned if int(label) == mode_index)) for mode_index in nonempty_mode_indices]
+        mode_prior_raw, mode_prior_smoothed = _mode_priors_from_counts(mode_num_samples, mode_prior_beta)
+        quality_report["label_calibration_enabled"] = bool(label_calibration_enabled)
+        quality_report["label_hist_interpolation_alpha"] = float(label_alpha)
+        quality_report["mode_prior_smoothing_enabled"] = bool(mode_prior_smoothing_enabled)
+        quality_report["mode_prior_smoothing_beta"] = float(mode_prior_beta)
         categories[category] = {
             "strategy": strategy,
             "requested_modes": int(requested_modes),
@@ -903,14 +1011,21 @@ def build_instruction_matrix_grammar_prior(items: list[dict[str, Any]], config: 
             "unusable_reasons": quality_report["unusable_reasons"],
             "num_samples": int(len(raw_samples)),
             "basis_fg_mask_prob": basis_fg_mask_prob,
-            "basis_label_prob_16": basis_label_prob_16,
+            "basis_label_prob_16": basis_label_prob_16_active,
+            "basis_label_prob_16_raw": basis_label_prob_16_raw if bool(calibration_cf.get("save_raw_label_prob", True)) else None,
+            "basis_label_prob_16_calibrated": basis_label_prob_16_calibrated if bool(calibration_cf.get("save_calibrated_label_prob", True)) else None,
             "basis_label_mass": basis_label_mass,
             "basis_label_argmax": basis_label_argmax,
             "basis_label_confidence": basis_label_confidence,
+            "category_label_hist_16": category_label_hist_16,
+            "label_hist_interpolation_alpha": float(label_alpha),
+            "mode_prior_raw": mode_prior_raw,
+            "mode_prior_smoothed": mode_prior_smoothed,
+            "mode_prior_smoothing_beta": float(mode_prior_beta),
             "mode_stats": mode_stats,
             "mode_centers": [centers[index] for index in nonempty_mode_indices],
             "mode_original_indices": nonempty_mode_indices,
-            "mode_num_samples": [int(sum(1 for label in assigned if int(label) == mode_index)) for mode_index in nonempty_mode_indices],
+            "mode_num_samples": mode_num_samples,
             "top_row_programs": _top_counter(top_row_counter, 64),
             "top_col_programs": _top_counter(top_col_counter, 64),
             "directional_shift_stats": directional_shift_stats,

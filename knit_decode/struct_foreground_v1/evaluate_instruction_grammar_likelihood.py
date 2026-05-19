@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--w-mask", type=float, default=1.0)
     parser.add_argument("--w-label", type=float, default=1.0)
     parser.add_argument("--baselines", action="store_true")
+    parser.add_argument("--use-calibrated-label-prob", dest="use_calibrated_label_prob", action="store_true", default=None)
+    parser.add_argument("--no-calibrated-label-prob", dest="use_calibrated_label_prob", action="store_false")
+    parser.add_argument("--use-smoothed-mode-prior", dest="use_smoothed_mode_prior", action="store_true", default=None)
+    parser.add_argument("--no-smoothed-mode-prior", dest="use_smoothed_mode_prior", action="store_false")
+    parser.add_argument("--compare-raw-calibrated", action="store_true")
     return parser
 
 
@@ -159,6 +164,23 @@ def _entropy_from_counts(counts: Counter[int]) -> float:
     return float(entropy)
 
 
+def _config_bool(config: dict[str, Any], key: str, default: bool) -> bool:
+    cf = config.get("instruction_matrix_grammar_prior", {}) if isinstance(config.get("instruction_matrix_grammar_prior", {}), dict) else {}
+    eval_cf = cf.get("evaluate_instruction_grammar_likelihood", {}) if isinstance(cf.get("evaluate_instruction_grammar_likelihood", {}), dict) else {}
+    return bool(eval_cf.get(key, default))
+
+
+def _mode_pruning_thresholds(config: dict[str, Any]) -> dict[str, float]:
+    cf = config.get("instruction_matrix_grammar_prior", {}) if isinstance(config.get("instruction_matrix_grammar_prior", {}), dict) else {}
+    calibration_cf = cf.get("calibration", {}) if isinstance(cf.get("calibration", {}), dict) else {}
+    pruning_cf = calibration_cf.get("mode_pruning", {}) if isinstance(calibration_cf.get("mode_pruning", {}), dict) else {}
+    return {
+        "max_unused_fraction_warn": float(pruning_cf.get("max_unused_fraction_warn", 0.5)),
+        "max_mode_fraction_warn": float(pruning_cf.get("max_mode_fraction_warn", 0.8)),
+        "min_mode_usage_fraction": float(pruning_cf.get("min_mode_usage_fraction", 0.01)),
+    }
+
+
 def _load_y_for_row(row: dict[str, Any], manifest_root: Path, data_cf: dict[str, Any]) -> tuple[list[list[int]], list[list[int]], bool]:
     sample_id = str(row.get("sample_id", row.get("id", "unknown")))
     if not isinstance(row.get("target_path"), str):
@@ -193,9 +215,34 @@ def _load_y_for_row(row: dict[str, Any], manifest_root: Path, data_cf: dict[str,
     return y20, mask20, bool(canonical.get("is_empty_foreground", False))
 
 
-def _validate_modes(entry: dict[str, Any], category: str, source_name: str) -> tuple[list[Any], list[Any], list[float]]:
+def _priors_from_counts(entry: dict[str, Any], mode_count: int, beta: float) -> list[float]:
+    mode_num_samples = _to_list(entry.get("mode_num_samples", []))
+    if not isinstance(mode_num_samples, list) or len(mode_num_samples) != mode_count:
+        return [1.0 / float(mode_count) for _ in range(mode_count)]
+    counts = [max(0.0, _safe_float(value)) for value in mode_num_samples]
+    total = sum(counts)
+    beta = max(0.0, float(beta))
+    denom = total + beta * float(mode_count)
+    if denom <= 0.0:
+        return [1.0 / float(mode_count) for _ in range(mode_count)]
+    priors = [(count + beta) / denom for count in counts]
+    prior_sum = sum(priors)
+    return [float(value) / prior_sum for value in priors] if prior_sum > 0.0 else [1.0 / float(mode_count) for _ in range(mode_count)]
+
+
+def _validate_modes(
+    entry: dict[str, Any],
+    category: str,
+    source_name: str,
+    *,
+    use_calibrated_label_prob: bool = True,
+    use_smoothed_mode_prior: bool = True,
+) -> tuple[list[Any], list[Any], list[float]]:
     fg_prob = _to_list(entry.get("basis_fg_mask_prob"))
-    label_prob = _to_list(entry.get("basis_label_prob_16"))
+    label_key = "basis_label_prob_16_calibrated" if use_calibrated_label_prob and entry.get("basis_label_prob_16_calibrated") is not None else "basis_label_prob_16"
+    if (not use_calibrated_label_prob) and entry.get("basis_label_prob_16_raw") is not None:
+        label_key = "basis_label_prob_16_raw"
+    label_prob = _to_list(entry.get(label_key))
     if not isinstance(fg_prob, list) or not isinstance(label_prob, list):
         raise ValueError(f"{source_name} category {category!r} is missing basis_fg_mask_prob/basis_label_prob_16.")
     if len(fg_prob) != len(label_prob):
@@ -203,13 +250,14 @@ def _validate_modes(entry: dict[str, Any], category: str, source_name: str) -> t
     mode_count = len(fg_prob)
     if mode_count <= 0:
         raise ValueError(f"{source_name} category {category!r} has no modes.")
-    mode_num_samples = _to_list(entry.get("mode_num_samples", []))
-    priors: list[float]
-    if isinstance(mode_num_samples, list) and len(mode_num_samples) == mode_count and sum(max(0.0, _safe_float(value)) for value in mode_num_samples) > 0.0:
-        total = sum(max(0.0, _safe_float(value)) for value in mode_num_samples)
-        priors = [max(0.0, _safe_float(value)) / total for value in mode_num_samples]
+    prior_key = "mode_prior_smoothed" if use_smoothed_mode_prior else "mode_prior_raw"
+    stored_priors = _to_list(entry.get(prior_key))
+    if isinstance(stored_priors, list) and len(stored_priors) == mode_count and sum(max(0.0, _safe_float(value)) for value in stored_priors) > 0.0:
+        total = sum(max(0.0, _safe_float(value)) for value in stored_priors)
+        priors = [max(0.0, _safe_float(value)) / total for value in stored_priors]
     else:
-        priors = [1.0 / float(mode_count) for _ in range(mode_count)]
+        beta = _safe_float(entry.get("mode_prior_smoothing_beta"), 1.0 if use_smoothed_mode_prior else 0.0) if use_smoothed_mode_prior else 0.0
+        priors = _priors_from_counts(entry, mode_count, beta)
     return fg_prob, label_prob, priors
 
 
@@ -373,6 +421,8 @@ def _score_baselines(
     category: str,
     fg_modes: list[Any],
     label_modes: list[Any],
+    raw_label_modes: list[Any],
+    calibrated_label_modes: list[Any],
     priors: list[float],
     global_fg_rate: float,
     dictionary_entry: dict[str, Any] | None,
@@ -427,14 +477,30 @@ def _score_baselines(
         include_mask=True,
         include_label=True,
     )
-    out["mode_label_only"] = _score_modes(
+    out["mode_label_only_raw"] = _score_modes(
         y20,
         mask20,
         [_constant_mask_mode(0.5)[0] for _ in fg_modes],
-        label_modes,
+        raw_label_modes,
         priors,
         category=category,
-        source_name="mode_label_only",
+        source_name="mode_label_only_raw",
+        eps=float(args.eps),
+        label_smoothing=float(args.label_smoothing),
+        mask_smoothing=float(args.mask_smoothing),
+        w_mask=0.0,
+        w_label=float(args.w_label),
+        include_mask=False,
+        include_label=True,
+    )
+    out["mode_label_only_calibrated"] = _score_modes(
+        y20,
+        mask20,
+        [_constant_mask_mode(0.5)[0] for _ in fg_modes],
+        calibrated_label_modes,
+        priors,
+        category=category,
+        source_name="mode_label_only_calibrated",
         eps=float(args.eps),
         label_smoothing=float(args.label_smoothing),
         mask_smoothing=float(args.mask_smoothing),
@@ -445,7 +511,13 @@ def _score_baselines(
     )
     if dictionary_entry is not None:
         try:
-            d_fg, d_label, d_priors = _validate_modes(dictionary_entry, category, "dictionary_bank")
+            d_fg, d_label, d_priors = _validate_modes(
+                dictionary_entry,
+                category,
+                "dictionary_bank",
+                use_calibrated_label_prob=False,
+                use_smoothed_mode_prior=False,
+            )
             out["dictionary_fallback"] = _score_modes(
                 y20,
                 mask20,
@@ -569,10 +641,13 @@ def _summarize_by_category(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _baseline_summary(primary_rows: list[dict[str, Any]], baseline_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[str, list[dict[str, Any]]] = {"instruction_matrix_grammar_prior": primary_rows}
+def _baseline_summary(primary_rows: list[dict[str, Any]], baseline_rows: list[dict[str, Any]], primary_name: str) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {primary_name: primary_rows}
     for row in baseline_rows:
-        grouped.setdefault(str(row["baseline"]), []).append(row)
+        name = str(row["baseline"])
+        if name == primary_name:
+            continue
+        grouped.setdefault(name, []).append(row)
     out: list[dict[str, Any]] = []
     primary_mean = _mean([float(row["mixture_nll_per_cell"]) for row in primary_rows])
     for name in sorted(grouped):
@@ -586,14 +661,14 @@ def _baseline_summary(primary_rows: list[dict[str, Any]], baseline_rows: list[di
                 "mean_mixture_nll_per_cell": mean_mix,
                 "mean_mask_nll_per_cell": _mean([float(row["mask_nll_per_cell"]) for row in rows if "mask_nll_per_cell" in row]),
                 "mean_label_nll_per_fg": _mean([float(row["label_nll_per_fg"]) for row in rows if "label_nll_per_fg" in row]),
-                "delta_vs_instruction_mixture_nll_per_cell": float(mean_mix - primary_mean) if name != "instruction_matrix_grammar_prior" else 0.0,
-                "instruction_improves": bool(primary_mean < mean_mix) if name != "instruction_matrix_grammar_prior" else None,
+                "delta_vs_instruction_mixture_nll_per_cell": float(mean_mix - primary_mean) if name != primary_name else 0.0,
+                "instruction_improves": bool(primary_mean < mean_mix) if name != primary_name else None,
             }
         )
     return out
 
 
-def _mode_usage(rows: list[dict[str, Any]], prior_categories: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _mode_usage(rows: list[dict[str, Any]], prior_categories: dict[str, Any], thresholds: dict[str, float]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     csv_rows: list[dict[str, Any]] = []
     payload: dict[str, Any] = {}
     for category in sorted({str(row["category"]) for row in rows}):
@@ -604,29 +679,52 @@ def _mode_usage(rows: list[dict[str, Any]], prior_categories: dict[str, Any]) ->
         entropy = _entropy_from_counts(counts)
         max_fraction = max((count / float(total) for count in counts.values()), default=0.0)
         unused = [mode_id for mode_id in range(mode_count) if counts.get(mode_id, 0) == 0]
+        used_modes = int(mode_count - len(unused))
+        unused_fraction = float(len(unused) / float(max(1, mode_count)))
+        normalized_entropy = float(entropy / math.log(mode_count)) if mode_count > 1 else 0.0
+        min_usage = float(thresholds.get("min_mode_usage_fraction", 0.01))
+        nontrivial_modes = int(sum(1 for count in counts.values() if total > 0 and float(count) / float(total) >= min_usage))
         risks = []
-        if max_fraction > 0.8:
+        if max_fraction > float(thresholds.get("max_mode_fraction_warn", 0.8)):
             risks.append("max_mode_fraction_gt_0.8")
-        if mode_count > 1 and len(unused) >= max(1, mode_count // 2):
-            risks.append("many_modes_unused")
+        if unused_fraction > float(thresholds.get("max_unused_fraction_warn", 0.5)):
+            risks.append("unused_fraction_gt_warn")
+        if used_modes < math.ceil(0.5 * float(mode_count)):
+            risks.append("used_modes_lt_half_k")
+        suggested_count = max(1, nontrivial_modes or used_modes)
+        suggested_action = "inspect" if risks else "keep"
+        if risks and suggested_count < mode_count:
+            suggested_action = "reduce_modes"
         payload[category] = {
             "support": int(total),
             "mode_count": int(mode_count),
+            "used_modes": int(used_modes),
             "counts": {str(key): int(value) for key, value in sorted(counts.items())},
             "mode_usage_entropy": float(entropy),
+            "normalized_mode_usage_entropy": float(normalized_entropy),
             "max_mode_fraction": float(max_fraction),
             "unused_modes": unused,
+            "unused_fraction": float(unused_fraction),
+            "risk_flags": risks,
             "risks": risks,
+            "nontrivial_modes": int(nontrivial_modes),
+            "suggested_mode_count": int(suggested_count),
+            "suggested_action": suggested_action,
         }
         csv_rows.append(
             {
                 "category": category,
                 "support": int(total),
                 "mode_count": int(mode_count),
+                "used_modes": int(used_modes),
                 "mode_usage_entropy": float(entropy),
+                "normalized_mode_usage_entropy": float(normalized_entropy),
                 "max_mode_fraction": float(max_fraction),
+                "unused_fraction": float(unused_fraction),
                 "unused_modes": " ".join(str(value) for value in unused),
                 "risk_flags": " ".join(risks),
+                "suggested_mode_count": int(suggested_count),
+                "suggested_action": suggested_action,
                 "counts_json": json.dumps(payload[category]["counts"], ensure_ascii=False),
             }
         )
@@ -646,11 +744,84 @@ def _write_markdown_table(path: Path, title: str, rows: list[dict[str, Any]], co
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _score_variant(
+    y20: list[list[int]],
+    mask20: list[list[int]],
+    entry: dict[str, Any],
+    *,
+    category: str,
+    variant_name: str,
+    use_calibrated_label_prob: bool,
+    use_smoothed_mode_prior: bool,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    fg_modes, label_modes, priors = _validate_modes(
+        entry,
+        category,
+        "instruction_matrix_grammar_prior",
+        use_calibrated_label_prob=use_calibrated_label_prob,
+        use_smoothed_mode_prior=use_smoothed_mode_prior,
+    )
+    score = _score_modes(
+        y20,
+        mask20,
+        fg_modes,
+        label_modes,
+        priors,
+        category=category,
+        source_name=variant_name,
+        eps=float(args.eps),
+        label_smoothing=float(args.label_smoothing),
+        mask_smoothing=float(args.mask_smoothing),
+        w_mask=float(args.w_mask),
+        w_label=float(args.w_label),
+    )
+    return {**score, "fg_modes": fg_modes, "label_modes": label_modes, "priors": priors}
+
+
+def _comparison_summary(rows: list[dict[str, Any]], prior_categories: dict[str, Any], thresholds: dict[str, float]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for variant in sorted({str(row["variant"]) for row in rows}):
+        variant_rows = [row for row in rows if str(row["variant"]) == variant]
+        _, usage_payload = _mode_usage(variant_rows, prior_categories, thresholds)
+        risk_categories = [category for category, payload in usage_payload.items() if payload.get("risk_flags")]
+        out.append(
+            {
+                "variant": variant,
+                "support": len(variant_rows),
+                "mean_mixture_nll_per_cell": _mean([float(row["mixture_nll_per_cell"]) for row in variant_rows]),
+                "mean_mask_nll_per_cell": _mean([float(row["mask_nll_per_cell"]) for row in variant_rows]),
+                "mean_label_nll_per_fg": _mean([float(row["label_nll_per_fg"]) for row in variant_rows]),
+                "mean_true_token_probability": _mean([float(row["mean_true_token_probability"]) for row in variant_rows]),
+                "delta_label_nll_vs_raw_raw": 0.0,
+                "delta_mixture_nll_vs_raw_raw": 0.0,
+                "calibrated_label_nll_improves_vs_raw_raw": None,
+                "calibrated_mixture_nll_improves_vs_raw_raw": None,
+                "mode_usage_risk_categories": " ".join(risk_categories),
+            }
+        )
+    lookup = {str(row["variant"]): row for row in out}
+    raw = lookup.get("raw_mode_prior_raw_label_prob")
+    calibrated = lookup.get("smoothed_prior_calibrated_label_prob")
+    if raw is not None and calibrated is not None:
+        for row in out:
+            row["delta_label_nll_vs_raw_raw"] = float(row["mean_label_nll_per_fg"]) - float(raw["mean_label_nll_per_fg"])
+            row["delta_mixture_nll_vs_raw_raw"] = float(row["mean_mixture_nll_per_cell"]) - float(raw["mean_mixture_nll_per_cell"])
+        calibrated["calibrated_label_nll_improves_vs_raw_raw"] = bool(float(calibrated["mean_label_nll_per_fg"]) < float(raw["mean_label_nll_per_fg"]))
+        calibrated["calibrated_mixture_nll_improves_vs_raw_raw"] = bool(float(calibrated["mean_mixture_nll_per_cell"]) < float(raw["mean_mixture_nll_per_cell"]))
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     config = load_config(args.config)
     data_cf = config.get("data", {}) if isinstance(config.get("data", {}), dict) else {}
+    if args.use_calibrated_label_prob is None:
+        args.use_calibrated_label_prob = _config_bool(config, "use_calibrated_label_prob", True)
+    if args.use_smoothed_mode_prior is None:
+        args.use_smoothed_mode_prior = _config_bool(config, "use_smoothed_mode_prior", True)
+    mode_thresholds = _mode_pruning_thresholds(config)
     torch = _require_torch()
     cache = torch.load(args.cache, map_location="cpu")
     if not isinstance(cache, dict):
@@ -675,6 +846,7 @@ def main(argv: list[str] | None = None) -> int:
 
     per_sample_rows: list[dict[str, Any]] = []
     baseline_sample_rows: list[dict[str, Any]] = []
+    comparison_sample_rows: list[dict[str, Any]] = []
     skipped_unknown_category = 0
     skipped_no_modes = 0
     empty_foreground_count = 0
@@ -696,7 +868,13 @@ def main(argv: list[str] | None = None) -> int:
             skipped_no_modes += 1
             continue
         try:
-            fg_modes, label_modes, priors = _validate_modes(entry, category, "instruction_matrix_grammar_prior")
+            fg_modes, label_modes, priors = _validate_modes(
+                entry,
+                category,
+                "instruction_matrix_grammar_prior",
+                use_calibrated_label_prob=bool(args.use_calibrated_label_prob),
+                use_smoothed_mode_prior=bool(args.use_smoothed_mode_prior),
+            )
         except Exception as error:
             skipped_no_modes += 1
             print(f"WARNING skip sample_id={sample_id} category={category}: {error}", flush=True)
@@ -704,20 +882,19 @@ def main(argv: list[str] | None = None) -> int:
         y20, mask20, is_empty = _load_y_for_row(row, manifest_root, data_cf)
         if is_empty:
             empty_foreground_count += 1
-        primary = _score_modes(
+        primary = _score_variant(
             y20,
             mask20,
-            fg_modes,
-            label_modes,
-            priors,
+            entry,
             category=category,
-            source_name="instruction_matrix_grammar_prior",
-            eps=float(args.eps),
-            label_smoothing=float(args.label_smoothing),
-            mask_smoothing=float(args.mask_smoothing),
-            w_mask=float(args.w_mask),
-            w_label=float(args.w_label),
+            variant_name="instruction_matrix_grammar_prior_calibrated" if bool(args.use_calibrated_label_prob) else "instruction_matrix_grammar_prior_raw",
+            use_calibrated_label_prob=bool(args.use_calibrated_label_prob),
+            use_smoothed_mode_prior=bool(args.use_smoothed_mode_prior),
+            args=args,
         )
+        fg_modes = primary["fg_modes"]
+        label_modes = primary["label_modes"]
+        priors = primary["priors"]
         nan_or_inf_count += int(primary.get("nan_or_inf_count", 0))
         best_mode_id = int(primary["best_mode_id"])
         cal_rows, true_probs = _calibration_rows(
@@ -747,16 +924,64 @@ def main(argv: list[str] | None = None) -> int:
             "label_nll_per_fg": float(primary["label_nll_per_fg"]),
             "num_foreground": int(num_fg),
             "label_diversity": int(label_diversity_on_fg(y20, mask20)),
+            "mean_true_token_probability": float(primary["mean_true_token_probability"]),
             "mode_posterior": [float(value) for value in primary.get("mode_posterior", [])],
         }
         per_sample_rows.append(sample_row)
+        if args.compare_raw_calibrated:
+            variants = [
+                ("raw_mode_prior_raw_label_prob", False, False),
+                ("smoothed_prior_raw_label_prob", False, True),
+                ("raw_mode_prior_calibrated_label_prob", True, False),
+                ("smoothed_prior_calibrated_label_prob", True, True),
+            ]
+            for variant_name, use_cal_label, use_smooth_prior in variants:
+                variant = _score_variant(
+                    y20,
+                    mask20,
+                    entry,
+                    category=category,
+                    variant_name=variant_name,
+                    use_calibrated_label_prob=use_cal_label,
+                    use_smoothed_mode_prior=use_smooth_prior,
+                    args=args,
+                )
+                comparison_sample_rows.append(
+                    {
+                        "sample_id": sample_id,
+                        "category": category,
+                        "variant": variant_name,
+                        "best_mode_id": int(variant["best_mode_id"]),
+                        "map_energy": float(variant["map_energy"]),
+                        "mixture_nll_per_cell": float(variant["mixture_nll_per_cell"]),
+                        "mask_nll_per_cell": float(variant["mask_nll_per_cell"]),
+                        "label_nll_per_fg": float(variant["label_nll_per_fg"]),
+                        "mean_true_token_probability": float(variant["mean_true_token_probability"]),
+                    }
+                )
         if args.baselines:
+            raw_fg_modes, raw_label_modes, raw_priors = _validate_modes(
+                entry,
+                category,
+                "instruction_matrix_grammar_prior",
+                use_calibrated_label_prob=False,
+                use_smoothed_mode_prior=bool(args.use_smoothed_mode_prior),
+            )
+            cal_fg_modes, calibrated_label_modes, _ = _validate_modes(
+                entry,
+                category,
+                "instruction_matrix_grammar_prior",
+                use_calibrated_label_prob=True,
+                use_smoothed_mode_prior=bool(args.use_smoothed_mode_prior),
+            )
             baselines = _score_baselines(
                 y20,
                 mask20,
                 category=category,
                 fg_modes=fg_modes,
                 label_modes=label_modes,
+                raw_label_modes=raw_label_modes,
+                calibrated_label_modes=calibrated_label_modes,
                 priors=priors,
                 global_fg_rate=global_fg_rate,
                 dictionary_entry=dictionary_categories.get(category) if isinstance(dictionary_categories.get(category), dict) else None,
@@ -781,8 +1006,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     per_category_rows = _summarize_by_category(per_sample_rows)
-    baseline_comparison_rows = _baseline_summary(per_sample_rows, baseline_sample_rows) if args.baselines else _baseline_summary(per_sample_rows, [])
-    mode_usage_rows, mode_usage_payload = _mode_usage(per_sample_rows, categories)
+    primary_name = "instruction_matrix_grammar_prior_calibrated" if bool(args.use_calibrated_label_prob) else "instruction_matrix_grammar_prior_raw"
+    if comparison_sample_rows:
+        for primary_variant in ("raw_mode_prior_raw_label_prob", "smoothed_prior_calibrated_label_prob"):
+            for row in comparison_sample_rows:
+                if str(row["variant"]) == primary_variant:
+                    baseline_name = "instruction_matrix_grammar_prior_calibrated" if primary_variant == "smoothed_prior_calibrated_label_prob" else "instruction_matrix_grammar_prior_raw"
+                    baseline_sample_rows.append({**row, "baseline": baseline_name})
+    baseline_comparison_rows = _baseline_summary(per_sample_rows, baseline_sample_rows, primary_name)
+    mode_usage_rows, mode_usage_payload = _mode_usage(per_sample_rows, categories, mode_thresholds)
+    calibration_comparison_rows = _comparison_summary(comparison_sample_rows, categories, mode_thresholds) if comparison_sample_rows else []
     calibration_rows = []
     for bin_index in range(10):
         bucket = calibration_counts[bin_index]
@@ -800,7 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
     improves_over_baselines = {
         str(name): bool(primary_mix < float(row.get("mean_mixture_nll_per_cell", LARGE_PENALTY)))
         for name, row in baseline_lookup.items()
-        if str(name) != "instruction_matrix_grammar_prior"
+        if str(name) != primary_name and not str(name).startswith("mode_label_only")
     }
     summary = {
         "split_name": str(args.split_name),
@@ -817,9 +1050,11 @@ def main(argv: list[str] | None = None) -> int:
         "mean_true_token_probability": _mean(label_true_probs),
         "per_category_means": per_category_rows,
         "baseline_comparison": baseline_comparison_rows,
+        "calibration_comparison": calibration_comparison_rows,
         "improves_over_baselines": improves_over_baselines,
         "instruction_prior_improves_over_all_available_baselines": bool(improves_over_baselines and all(improves_over_baselines.values())),
-        "mode_usage_risk_categories": {category: payload["risks"] for category, payload in mode_usage_payload.items() if payload.get("risks")},
+        "mode_usage_risk_categories": {category: payload["risk_flags"] for category, payload in mode_usage_payload.items() if payload.get("risk_flags")},
+        "suggested_mode_count_by_category": {category: int(payload["suggested_mode_count"]) for category, payload in mode_usage_payload.items()},
         "baseline_warnings": baseline_warnings[:100],
         "parameters": {
             "eps": float(args.eps),
@@ -827,6 +1062,8 @@ def main(argv: list[str] | None = None) -> int:
             "mask_smoothing": float(args.mask_smoothing),
             "w_mask": float(args.w_mask),
             "w_label": float(args.w_label),
+            "use_calibrated_label_prob": bool(args.use_calibrated_label_prob),
+            "use_smoothed_mode_prior": bool(args.use_smoothed_mode_prior),
         },
     }
 
@@ -848,12 +1085,61 @@ def main(argv: list[str] | None = None) -> int:
         baseline_comparison_rows,
         ["baseline", "support", "mean_mixture_nll_per_cell", "mean_mask_nll_per_cell", "mean_label_nll_per_fg", "delta_vs_instruction_mixture_nll_per_cell", "instruction_improves"],
     )
+    if calibration_comparison_rows:
+        _write_csv(
+            args.output_dir / "calibration_comparison.csv",
+            calibration_comparison_rows,
+            [
+                "variant",
+                "support",
+                "mean_mixture_nll_per_cell",
+                "mean_mask_nll_per_cell",
+                "mean_label_nll_per_fg",
+                "mean_true_token_probability",
+                "delta_label_nll_vs_raw_raw",
+                "delta_mixture_nll_vs_raw_raw",
+                "calibrated_label_nll_improves_vs_raw_raw",
+                "calibrated_mixture_nll_improves_vs_raw_raw",
+                "mode_usage_risk_categories",
+            ],
+        )
+        _write_markdown_table(
+            args.output_dir / "calibration_comparison.md",
+            "Calibration Comparison",
+            calibration_comparison_rows,
+            [
+                "variant",
+                "support",
+                "mean_mixture_nll_per_cell",
+                "mean_mask_nll_per_cell",
+                "mean_label_nll_per_fg",
+                "mean_true_token_probability",
+                "delta_label_nll_vs_raw_raw",
+                "delta_mixture_nll_vs_raw_raw",
+                "mode_usage_risk_categories",
+            ],
+        )
     _write_csv(
         args.output_dir / "mode_usage.csv",
         mode_usage_rows,
-        ["category", "support", "mode_count", "mode_usage_entropy", "max_mode_fraction", "unused_modes", "risk_flags", "counts_json"],
+        [
+            "category",
+            "support",
+            "mode_count",
+            "used_modes",
+            "unused_modes",
+            "unused_fraction",
+            "max_mode_fraction",
+            "mode_usage_entropy",
+            "normalized_mode_usage_entropy",
+            "risk_flags",
+            "suggested_mode_count",
+            "suggested_action",
+            "counts_json",
+        ],
     )
     save_json(args.output_dir / "mode_usage_by_category.json", _json_safe(mode_usage_payload))
+    save_json(args.output_dir / "mode_usage_risks.json", _json_safe({category: payload for category, payload in mode_usage_payload.items() if payload.get("risk_flags")}))
     _write_csv(args.output_dir / "mask_calibration.csv", calibration_rows, ["bin", "count", "predicted_probability", "empirical_foreground_rate"])
     _write_histogram_png(
         args.output_dir / "energy_histograms.png",
@@ -886,6 +1172,8 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(_json_safe(summary["mode_usage_risk_categories"]), ensure_ascii=False, indent=2),
         "",
         "## Baseline Comparison",
+        "",
+        "Note: label_only rows are diagnostic only and do not model foreground support.",
         "",
     ]
     for row in baseline_comparison_rows:
