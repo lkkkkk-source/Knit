@@ -153,10 +153,11 @@ def _accumulate_generated_metrics(
     losses: dict[str, float],
     category_area_stats: dict[str, dict[str, float]],
 ) -> None:
+    output_device = outputs["fg_mask_logits"].device
     fg_mask_prob = getattr(torch, "sigmoid")(outputs["fg_mask_logits"].detach().squeeze(1))
     fg_mask_pred = (fg_mask_prob >= 0.5).to(dtype=getattr(torch, "long"))
-    fg_mask_target = batch["fg_mask20"].detach().to(dtype=getattr(torch, "long"))
-    fg_target = batch["fg_y20"].detach()
+    fg_mask_target = batch["fg_mask20"].detach().to(device=output_device, dtype=getattr(torch, "long"))
+    fg_target = batch["fg_y20"].detach().to(device=output_device)
     fg_label_pred = outputs["fg_label_logits"].detach().argmax(dim=1) + 1
     inter = (fg_mask_pred * fg_mask_target).sum(dim=(1, 2)).to(dtype=getattr(torch, "float32"))
     union = ((fg_mask_pred + fg_mask_target) > 0).sum(dim=(1, 2)).to(dtype=getattr(torch, "float32"))
