@@ -7,7 +7,7 @@ from pathlib import Path
 from .compose_foreground import compose_foreground
 from .grammar_energy import GrammarEnergy, compute_candidate_descriptors
 from .inspect_foreground_planner import _require_torch
-from .utils import bbox_from_mask, build_planner_from_checkpoint_payload, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map
+from .utils import InstructionGrammarPriorError, bbox_from_mask, bbox_vector, build_planner_from_checkpoint_payload, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map, validate_instruction_grammar_prior_category
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +17,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--category", type=str, required=True)
     parser.add_argument("--num-candidates", type=int, default=32)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--prior-source", type=str, default=None, choices=["category_kmeans", "instruction_matrix_grammar"])
+    parser.add_argument("--prior-mode", type=str, default="sample", choices=["top", "sample", "all"])
+    parser.add_argument("--fallback-if-missing", dest="fallback_if_missing", action="store_true", default=None)
+    parser.add_argument("--no-fallback-if-missing", dest="fallback_if_missing", action="store_false")
     parser.add_argument("--use-grammar-rerank", action="store_true")
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--save-raw-candidates", action="store_true")
@@ -27,6 +31,110 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duplicate-mask-iou-threshold", type=float, default=0.95)
     parser.add_argument("--duplicate-label-hamming-threshold", type=float, default=0.05)
     return parser
+
+
+def _to_list(value: object) -> object:
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+
+def _choose_mode(torch: object, priors: list[float], strategy: str, count_index: int) -> int:
+    mode_count = len(priors)
+    if mode_count <= 0:
+        raise ValueError("Cannot choose prior mode from an empty mode list.")
+    if strategy == "top":
+        return int(max(range(mode_count), key=lambda index: float(priors[index])))
+    if strategy == "all":
+        return int(count_index % mode_count)
+    weights = getattr(torch, "tensor")([max(0.0, float(value)) for value in priors], dtype=getattr(torch, "float32"))
+    if float(weights.sum().item()) <= 0.0:
+        weights = getattr(torch, "ones")((mode_count,), dtype=getattr(torch, "float32")) / float(mode_count)
+    else:
+        weights = weights / weights.sum()
+    return int(getattr(torch, "multinomial")(weights, num_samples=1).item())
+
+
+def _binary_mask_from_prob(fg_prob: list[list[list[float]]]) -> list[list[int]]:
+    grid = fg_prob[0]
+    mask = [[1 if float(grid[y][x]) >= 0.5 else 0 for x in range(20)] for y in range(20)]
+    if sum(sum(row) for row in mask) <= 0:
+        flat = sorted((float(grid[y][x]), y, x) for y in range(20) for x in range(20))
+        for _, y, x in flat[-max(1, len(flat) // 20):]:
+            mask[y][x] = 1
+    return mask
+
+
+def _argmax_labels(label_prob: list[list[list[float]]], mask: list[list[int]]) -> list[list[int]]:
+    out: list[list[int]] = []
+    for y in range(20):
+        row: list[int] = []
+        for x in range(20):
+            if not mask[y][x]:
+                row.append(0)
+            else:
+                row.append(int(max(range(16), key=lambda idx: float(label_prob[idx][y][x])) + 1))
+        out.append(row)
+    return out
+
+
+def _instruction_prior_batch(cache_payload: dict[str, object], category: str, torch: object, count: int, strategy: str, label_prob_key: str, mode_prior_key: str) -> dict[str, object]:
+    validated = validate_instruction_grammar_prior_category(cache_payload, category, label_prob_key=label_prob_key, mode_prior_key=mode_prior_key)
+    fg_modes = validated["fg_modes"]
+    label_modes = validated["label_modes"]
+    if not isinstance(fg_modes, list) or not isinstance(label_modes, list):
+        raise InstructionGrammarPriorError("Invalid instruction_matrix_grammar_prior: validated mode tensors must be lists.")
+    priors = [float(value) for value in validated["mode_prior"]]
+    mode_ids = [_choose_mode(torch, priors, strategy, index) for index in range(count)]
+    fg_probs = []
+    label_probs = []
+    label_hists = []
+    row_proj = []
+    col_proj = []
+    adjacency = []
+    transition = []
+    bbox_stats = []
+    for mode_id in mode_ids:
+        fg_prob = _to_list(fg_modes[mode_id])
+        label_prob = _to_list(label_modes[mode_id])
+        if not isinstance(fg_prob, list) or not isinstance(label_prob, list):
+            raise ValueError(f"instruction_matrix_grammar_prior category {category!r} mode={mode_id} invalid tensors.")
+        fg_mask = _binary_mask_from_prob(fg_prob)
+        fg_label = _argmax_labels(label_prob, fg_mask)
+        bbox = bbox_from_mask([[bool(value) for value in row] for row in fg_mask])
+        desc = foreground_descriptor(fg_label, fg_mask, bbox)
+        fg_probs.append(fg_prob)
+        label_probs.append(label_prob)
+        label_hists.append(desc["label_hist_16"])
+        row_proj.append(desc["row_projection"])
+        col_proj.append(desc["col_projection"])
+        adjacency.append(desc["adjacency_signature"])
+        transition.append(desc["transition_2x2_stats"])
+        bbox_stats.append(bbox_vector(bbox))
+    return {
+        "prior_source": "instruction_matrix_grammar",
+        "mode_ids": mode_ids,
+        "mode_count": int(validated["num_modes"]),
+        "mode_prior_key": str(validated["mode_prior_key"]),
+        "label_prob_key": str(validated["label_prob_key"]),
+        "mode_prior": priors,
+        "mode_prior_sum": float(validated["mode_prior_sum"]),
+        "mode_prior_min": float(validated["mode_prior_min"]),
+        "mode_prior_max": float(validated["mode_prior_max"]),
+        "schema_version": str(validated["schema_version"]),
+        "num_categories": int(validated["num_categories"]),
+        "warnings": list(validated["warnings"]),
+        "centroid_fg_mask_prob": getattr(torch, "tensor")(fg_probs, dtype=getattr(torch, "float32")),
+        "centroid_label_prob_16": getattr(torch, "tensor")(label_probs, dtype=getattr(torch, "float32")),
+        "centroid_label_hist": getattr(torch, "tensor")(label_hists, dtype=getattr(torch, "float32")),
+        "centroid_row_projection": getattr(torch, "tensor")(row_proj, dtype=getattr(torch, "float32")),
+        "centroid_col_projection": getattr(torch, "tensor")(col_proj, dtype=getattr(torch, "float32")),
+        "centroid_adjacency": getattr(torch, "tensor")(adjacency, dtype=getattr(torch, "float32")),
+        "centroid_transition_stats": getattr(torch, "tensor")(transition, dtype=getattr(torch, "float32")),
+        "centroid_bbox_stats": getattr(torch, "tensor")(bbox_stats, dtype=getattr(torch, "float32")),
+    }
 
 
 def _descriptor_margin(descriptor: list[float], category: str, cache_payload: dict[str, object]) -> tuple[float, float, float]:
@@ -274,6 +382,34 @@ def main(argv: list[str] | None = None) -> int:
     require_centroid_sketch_fields(cache_payload, context="Foreground train cache")
     if args.category not in cache_payload["category_foreground_area_stats"]:
         raise ValueError(f"Foreground train cache is missing category_foreground_area_stats for category {args.category!r}.")
+    planner_prior_cf = (config.get("instruction_matrix_grammar_prior", {}) if isinstance(config.get("instruction_matrix_grammar_prior", {}), dict) else {}).get("planner_prior", {})
+    planner_prior_cf = planner_prior_cf if isinstance(planner_prior_cf, dict) else {}
+    sampling_cf = config.get("sampling", {}) if isinstance(config.get("sampling", {}), dict) else {}
+    prior_source = str(args.prior_source or sampling_cf.get("prior_source", "category_kmeans"))
+    prior_mode_strategy = str(args.prior_mode)
+    label_prob_key = str(planner_prior_cf.get("label_prob_key", "basis_label_prob_16"))
+    mode_prior_key = str(planner_prior_cf.get("mode_prior_key", "mode_prior_smoothed"))
+    fallback_if_missing = bool(planner_prior_cf.get("fallback_if_missing", True))
+    if args.fallback_if_missing is not None:
+        fallback_if_missing = bool(args.fallback_if_missing)
+    requested_prior_source = prior_source
+    actual_prior_source = prior_source
+    fallback_reason = ""
+    prior_debug: dict[str, object] = {
+        "requested_prior_source": requested_prior_source,
+        "actual_prior_source": actual_prior_source,
+        "fallback_if_missing": fallback_if_missing,
+        "fallback_reason": fallback_reason,
+        "mode_prior_key": mode_prior_key,
+        "label_prob_key": label_prob_key,
+        "prior_mode_strategy": prior_mode_strategy,
+        "num_modes": 0,
+        "mode_prior_sum": 0.0,
+        "mode_prior_min": 0.0,
+        "mode_prior_max": 0.0,
+        "schema_version": None,
+        "warnings": [],
+    }
     grammar_bank = cache_payload.get("grammar_bank")
     rerank_cf = config.get("grammar_rerank", {}) if isinstance(config.get("grammar_rerank", {}), dict) else {}
     energy_override = _load_energy_override(args.energy_config)
@@ -291,6 +427,18 @@ def main(argv: list[str] | None = None) -> int:
             f"available categories: {sorted(train_categories)}"
         )
     model, model_kwargs, load_debug = build_planner_from_checkpoint_payload(payload, config)
+    print(
+        format_metric_line(
+            "sample-prior-init:",
+            [
+                ("requested_prior_source", requested_prior_source),
+                ("fallback_if_missing", fallback_if_missing),
+                ("prior_mode_strategy", prior_mode_strategy),
+                ("mode_prior_key", mode_prior_key),
+                ("label_prob_key", label_prob_key),
+            ],
+        )
+    )
     print(
         format_metric_line(
             "sample-foreground-load:",
@@ -313,44 +461,107 @@ def main(argv: list[str] | None = None) -> int:
         num_modes = int(category_to_num_modes[args.category])
         centroid_source = cache_payload["centroid_sketch_by_category"].get(args.category, {})
         max_num_modes = int(model_kwargs["max_num_modes"])
-        mode_mask = getattr(torch, "tensor")([[1 if k < num_modes else 0 for k in range(max_num_modes)] for _ in range(oversample)], dtype=getattr(torch, "bool"))
-        category_embed = model.category_embed(category_ids)
-        z_logits = model.local_z_head(category_embed).masked_fill(mode_mask.logical_not(), float("-inf"))
-        z_probs = getattr(__import__("importlib").import_module("torch.nn.functional"), "softmax")(z_logits, dim=-1)
-        sampled_local_z = getattr(torch, "multinomial")(z_probs, num_samples=1).squeeze(1)
-        centroid_label_hist = []
-        centroid_label_prob_16 = []
-        centroid_row_projection = []
-        centroid_col_projection = []
-        centroid_adjacency = []
-        centroid_transition_stats = []
-        centroid_bbox_stats = []
-        local_z = []
-        for index in range(oversample):
-            mode_index = int(sampled_local_z[index].item())
-            local_z.append(mode_index)
-            centroid = centroid_source.get(mode_index)
-            if centroid is None:
-                raise ValueError(f"Missing centroid sketch for category={args.category!r} local_z={mode_index}.")
-            if "centroid_fg_mask_prob" not in centroid or "centroid_label_prob_16" not in centroid:
-                raise ValueError("Foreground cache is missing centroid_fg_mask_prob / centroid_label_prob_16. Please rebuild the cache with the current build_foreground_cache.py.")
-            centroid_label_prob_16.append(centroid["centroid_label_prob_16"])
-            centroid_label_hist.append(centroid["centroid_label_hist"])
-            centroid_row_projection.append(centroid["centroid_row_projection"])
-            centroid_col_projection.append(centroid["centroid_col_projection"])
-            centroid_adjacency.append(centroid["centroid_adjacency"])
-            centroid_transition_stats.append(centroid["centroid_transition_stats"])
-            centroid_bbox_stats.append(centroid["centroid_bbox_stats"])
+        fallback_count = 0
+        if prior_source == "instruction_matrix_grammar":
+            try:
+                prior_batch = _instruction_prior_batch(cache_payload, args.category, torch, oversample, prior_mode_strategy, label_prob_key, mode_prior_key)
+                local_z = [int(value) for value in prior_batch["mode_ids"]]
+                condition_num_modes = min(max_num_modes, int(prior_batch["mode_count"]))
+                mode_mask = getattr(torch, "tensor")([[1 if k < condition_num_modes else 0 for k in range(max_num_modes)] for _ in range(oversample)], dtype=getattr(torch, "bool"))
+                centroid_fg_mask_prob = prior_batch["centroid_fg_mask_prob"]
+                centroid_label_prob_16_tensor = prior_batch["centroid_label_prob_16"]
+                centroid_label_hist_tensor = prior_batch["centroid_label_hist"]
+                centroid_row_projection_tensor = prior_batch["centroid_row_projection"]
+                centroid_col_projection_tensor = prior_batch["centroid_col_projection"]
+                centroid_adjacency_tensor = prior_batch["centroid_adjacency"]
+                centroid_transition_stats_tensor = prior_batch["centroid_transition_stats"]
+                centroid_bbox_stats_tensor = prior_batch["centroid_bbox_stats"]
+                label_prob_key = str(prior_batch["label_prob_key"])
+                mode_prior_key = str(prior_batch["mode_prior_key"])
+                prior_debug.update({
+                    "actual_prior_source": "instruction_matrix_grammar",
+                    "fallback_reason": "",
+                    "mode_prior_key": mode_prior_key,
+                    "label_prob_key": label_prob_key,
+                    "num_modes": int(prior_batch["mode_count"]),
+                    "mode_prior_sum": float(prior_batch["mode_prior_sum"]),
+                    "mode_prior_min": float(prior_batch["mode_prior_min"]),
+                    "mode_prior_max": float(prior_batch["mode_prior_max"]),
+                    "schema_version": str(prior_batch["schema_version"]),
+                    "instruction_grammar_categories": int(prior_batch["num_categories"]),
+                    "warnings": list(prior_batch["warnings"]),
+                })
+            except InstructionGrammarPriorError as error:
+                fallback_reason = str(error)
+                if not fallback_if_missing:
+                    raise ValueError(
+                        f"{error} Use --prior-source category_kmeans for old cache/checkpoint."
+                    ) from error
+                fallback_count += 1
+                actual_prior_source = "category_kmeans"
+                prior_source = "category_kmeans"
+                prior_debug.update({
+                    "actual_prior_source": actual_prior_source,
+                    "fallback_reason": fallback_reason,
+                })
+        if prior_source == "category_kmeans":
+            mode_mask = getattr(torch, "tensor")([[1 if k < num_modes else 0 for k in range(max_num_modes)] for _ in range(oversample)], dtype=getattr(torch, "bool"))
+            category_embed = model.category_embed(category_ids)
+            z_logits = model.local_z_head(category_embed).masked_fill(mode_mask.logical_not(), float("-inf"))
+            z_probs = getattr(__import__("importlib").import_module("torch.nn.functional"), "softmax")(z_logits, dim=-1)
+            sampled_local_z = getattr(torch, "multinomial")(z_probs, num_samples=1).squeeze(1)
+            centroid_label_hist = []
+            centroid_label_prob_16 = []
+            centroid_row_projection = []
+            centroid_col_projection = []
+            centroid_adjacency = []
+            centroid_transition_stats = []
+            centroid_bbox_stats = []
+            local_z = []
+            for index in range(oversample):
+                mode_index = int(sampled_local_z[index].item())
+                local_z.append(mode_index)
+                centroid = centroid_source.get(mode_index)
+                if centroid is None:
+                    raise ValueError(f"Missing centroid sketch for category={args.category!r} local_z={mode_index}.")
+                if "centroid_fg_mask_prob" not in centroid or "centroid_label_prob_16" not in centroid:
+                    raise ValueError("Foreground cache is missing centroid_fg_mask_prob / centroid_label_prob_16. Please rebuild the cache with the current build_foreground_cache.py.")
+                centroid_label_prob_16.append(centroid["centroid_label_prob_16"])
+                centroid_label_hist.append(centroid["centroid_label_hist"])
+                centroid_row_projection.append(centroid["centroid_row_projection"])
+                centroid_col_projection.append(centroid["centroid_col_projection"])
+                centroid_adjacency.append(centroid["centroid_adjacency"])
+                centroid_transition_stats.append(centroid["centroid_transition_stats"])
+                centroid_bbox_stats.append(centroid["centroid_bbox_stats"])
+            centroid_fg_mask_prob = getattr(torch, "stack")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z]).to(dtype=getattr(torch, "float32"))
+            centroid_label_prob_16_tensor = getattr(torch, "stack")(centroid_label_prob_16).to(dtype=getattr(torch, "float32"))
+            centroid_label_hist_tensor = getattr(torch, "tensor")(centroid_label_hist, dtype=getattr(torch, "float32"))
+            centroid_row_projection_tensor = getattr(torch, "tensor")(centroid_row_projection, dtype=getattr(torch, "float32"))
+            centroid_col_projection_tensor = getattr(torch, "tensor")(centroid_col_projection, dtype=getattr(torch, "float32"))
+            centroid_adjacency_tensor = getattr(torch, "tensor")(centroid_adjacency, dtype=getattr(torch, "float32"))
+            centroid_transition_stats_tensor = getattr(torch, "tensor")(centroid_transition_stats, dtype=getattr(torch, "float32"))
+            centroid_bbox_stats_tensor = getattr(torch, "tensor")(centroid_bbox_stats, dtype=getattr(torch, "float32"))
+            actual_prior_source = "category_kmeans"
+            prior_debug.update({
+                "actual_prior_source": actual_prior_source,
+                "mode_prior_key": "model_local_z",
+                "label_prob_key": "centroid_label_prob_16",
+                "num_modes": int(num_modes),
+                "mode_prior_sum": 1.0,
+                "mode_prior_min": 0.0,
+                "mode_prior_max": 1.0,
+                "schema_version": cache_payload.get("meta", {}).get("schema_version") if isinstance(cache_payload.get("meta"), dict) else None,
+            })
         out = model(
             category_ids,
-            getattr(torch, "stack")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z]).to(dtype=getattr(torch, "float32")),
-            getattr(torch, "stack")(centroid_label_prob_16).to(dtype=getattr(torch, "float32")),
-            getattr(torch, "tensor")(centroid_label_hist, dtype=getattr(torch, "float32")),
-            getattr(torch, "tensor")(centroid_row_projection, dtype=getattr(torch, "float32")),
-            getattr(torch, "tensor")(centroid_col_projection, dtype=getattr(torch, "float32")),
-            getattr(torch, "tensor")(centroid_adjacency, dtype=getattr(torch, "float32")),
-            getattr(torch, "tensor")(centroid_transition_stats, dtype=getattr(torch, "float32")),
-            getattr(torch, "tensor")(centroid_bbox_stats, dtype=getattr(torch, "float32")),
+            centroid_fg_mask_prob,
+            centroid_label_prob_16_tensor,
+            centroid_label_hist_tensor,
+            centroid_row_projection_tensor,
+            centroid_col_projection_tensor,
+            centroid_adjacency_tensor,
+            centroid_transition_stats_tensor,
+            centroid_bbox_stats_tensor,
             getattr(torch, "tensor")(local_z, dtype=getattr(torch, "long")),
             mode_mask,
         )
@@ -382,6 +593,9 @@ def main(argv: list[str] | None = None) -> int:
             rows.append({
                 "index": index,
                 "local_z": int(out["local_z"][index].item()),
+                "prior_source": actual_prior_source,
+                "prior_mode_id": int(local_z[index]),
+                "candidate_index_raw": int(index),
                 "fg_mask": fg_mask,
                 "fg_label": fg_label,
                 "bbox_pred": [float(value) for value in out["bbox_pred"][index].detach().cpu().tolist()],
@@ -452,6 +666,10 @@ def main(argv: list[str] | None = None) -> int:
             "rank": int(out_index),
             "category": args.category,
             "local_z": row["local_z"],
+            "prior_source": row.get("prior_source", actual_prior_source),
+            "prior_mode_id": row.get("prior_mode_id", row["local_z"]),
+            "candidate_index_raw": int(row.get("candidate_index_raw", row["index"])),
+            "candidate_index_selected": int(out_index),
             "bbox_pred": row["bbox_pred"],
             "fg_area": row["fg_area"],
             "label_diversity": row["label_diversity"],
@@ -477,6 +695,9 @@ def main(argv: list[str] | None = None) -> int:
             raw_candidates.append({
                 "index": row["index"],
                 "local_z": row["local_z"],
+                "prior_source": row.get("prior_source", actual_prior_source),
+                "prior_mode_id": row.get("prior_mode_id", row["local_z"]),
+                "candidate_index_raw": int(row.get("candidate_index_raw", row["index"])),
                 "is_valid_foreground": row["is_valid_foreground"],
                 "invalid_reasons": row["invalid_reasons"],
                 "fg_area": row["fg_area"],
@@ -494,6 +715,17 @@ def main(argv: list[str] | None = None) -> int:
         "planner_oversample": oversample,
         "num_valid_plans": len(valid_rows),
         "fallback_used": fallback_used,
+        "requested_prior_source": requested_prior_source,
+        "actual_prior_source": actual_prior_source,
+        "fallback_if_missing": fallback_if_missing,
+        "fallback_reason": fallback_reason,
+        "prior_source": actual_prior_source,
+        "mode_ids_oversample": [int(value) for value in local_z],
+        "mode_ids_selected": [int(row.get("prior_mode_id", row["local_z"])) for row in outputs],
+        "prior_mode_strategy": prior_mode_strategy,
+        "mode_prior_key": mode_prior_key if actual_prior_source == "instruction_matrix_grammar" else "model_local_z",
+        "label_prob_key": label_prob_key if actual_prior_source == "instruction_matrix_grammar" else "centroid_label_prob_16",
+        "fallback_count": fallback_count,
         "warning": ("valid candidates fewer than requested; included invalid fallback samples" if fallback_used else ""),
         "rerank_enabled": rerank_enabled,
         "top_k": int(args.top_k or rerank_cf.get("top_k", num_valid)),
@@ -503,6 +735,30 @@ def main(argv: list[str] | None = None) -> int:
         "selected_topk_indices": selected_topk_indices if rerank_enabled else ranking,
     }
     save_json(output_dir / "candidates.json", summary)
+    save_json(output_dir / "prior_mode_ids.json", {
+        "category": args.category,
+        "requested_prior_source": requested_prior_source,
+        "actual_prior_source": actual_prior_source,
+        "prior_mode_strategy": prior_mode_strategy,
+        "mode_ids_oversample": [int(value) for value in local_z],
+        "mode_ids_selected": [int(row.get("prior_mode_id", row["local_z"])) for row in outputs],
+        "num_oversample": int(len(local_z)),
+        "num_selected": int(len(outputs)),
+        "note": "mode_ids_oversample correspond to pre-rerank/pre-selection candidates; mode_ids_selected correspond to final saved candidates when available.",
+    })
+    prior_debug.update({
+        "category": args.category,
+        "requested_prior_source": requested_prior_source,
+        "actual_prior_source": actual_prior_source,
+        "fallback_if_missing": fallback_if_missing,
+        "fallback_reason": fallback_reason,
+        "prior_mode_strategy": prior_mode_strategy,
+        "mode_prior_key": mode_prior_key if actual_prior_source == "instruction_matrix_grammar" else "model_local_z",
+        "label_prob_key": label_prob_key if actual_prior_source == "instruction_matrix_grammar" else "centroid_label_prob_16",
+        "fallback_count": fallback_count,
+        "mode_id_histogram": {str(mode_id): [int(value) for value in local_z].count(mode_id) for mode_id in sorted(set(int(value) for value in local_z))},
+    })
+    save_json(output_dir / "prior_debug.json", prior_debug)
     if rerank_enabled:
         rows_by_index = {int(row["index"]): row for row in rows}
         energy_top_rows = [rows_by_index[i] for i in ranking_energy_only[: int(args.top_k or rerank_cf.get("top_k", num_valid))] if i in rows_by_index]

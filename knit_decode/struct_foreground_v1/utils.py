@@ -9,6 +9,7 @@ IGNORE_INDEX = -100
 EXPECTED_DESCRIPTOR_DIM = 329
 VALID_CANONICAL_MODES = ("full_masked", "bbox_crop")
 REQUIRED_FOREGROUND_CACHE_SCHEMA_VERSION = "foreground_v1_full_masked_labelbalanced_transition_kmeans_grammar_bank_v1"
+INSTRUCTION_GRAMMAR_PRIOR_SCHEMA_VERSION = "foreground_v1_instruction_matrix_grammar_prior_v1"
 FORBIDDEN_FOREGROUND_CACHE_KEYS = frozenset(
     {
         "clustering_feature",
@@ -31,6 +32,10 @@ REQUIRED_CENTROID_ENTRY_KEYS = (
     "centroid_fg_mask",
     "centroid_label_prob_16",
 )
+
+
+class InstructionGrammarPriorError(ValueError):
+    pass
 
 
 def _require_torch() -> object:
@@ -96,6 +101,141 @@ def checkpoint_get(payload: dict[str, object], key: str, *, required: bool = Tru
     if required:
         raise ValueError(f"Checkpoint is missing required metadata field {key!r}.")
     return None
+
+
+def to_plain_list(value: object) -> object:
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+
+def _instruction_prior_error(detail: str) -> InstructionGrammarPriorError:
+    return InstructionGrammarPriorError(
+        "Invalid instruction_matrix_grammar_prior: "
+        f"expected schema {INSTRUCTION_GRAMMAR_PRIOR_SCHEMA_VERSION!r}; {detail}"
+    )
+
+
+def _is_shape_1_20_20(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 1
+        and isinstance(value[0], list)
+        and len(value[0]) == 20
+        and all(isinstance(row, list) and len(row) == 20 for row in value[0])
+    )
+
+
+def _is_shape_16_20_20(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 16
+        and all(
+            isinstance(channel, list)
+            and len(channel) == 20
+            and all(isinstance(row, list) and len(row) == 20 for row in channel)
+            for channel in value
+        )
+    )
+
+
+def _normalize_instruction_mode_prior(raw: object, mode_count: int) -> tuple[list[float], list[str], dict[str, float | int]]:
+    values = to_plain_list(raw)
+    if not isinstance(values, list) or len(values) != mode_count:
+        raise _instruction_prior_error(f"mode prior length must equal K={mode_count}.")
+    warnings: list[str] = []
+    try:
+        priors = [float(value) for value in values]
+    except (TypeError, ValueError):
+        priors = []
+    invalid = (
+        len(priors) != mode_count
+        or any(not math.isfinite(value) for value in priors)
+        or any(value < 0.0 for value in priors)
+        or sum(priors) <= 0.0
+    )
+    if invalid:
+        warnings.append("invalid_mode_prior_fallback_uniform")
+        priors = [1.0 / float(mode_count) for _ in range(mode_count)]
+    else:
+        total = sum(priors)
+        priors = [value / total for value in priors]
+    return priors, warnings, {
+        "mode_prior_sum": float(sum(priors)),
+        "mode_prior_min": float(min(priors)) if priors else 0.0,
+        "mode_prior_max": float(max(priors)) if priors else 0.0,
+    }
+
+
+def validate_instruction_grammar_prior_category(
+    cache_payload: dict[str, object],
+    category: str,
+    *,
+    label_prob_key: str = "basis_label_prob_16",
+    mode_prior_key: str = "mode_prior_smoothed",
+) -> dict[str, object]:
+    prior = cache_payload.get("instruction_matrix_grammar_prior")
+    if not isinstance(prior, dict):
+        raise _instruction_prior_error("prior is missing.")
+    if prior.get("enabled") is not True:
+        raise _instruction_prior_error("enabled must be True.")
+    schema_version = prior.get("schema_version")
+    if schema_version != INSTRUCTION_GRAMMAR_PRIOR_SCHEMA_VERSION:
+        raise _instruction_prior_error(f"schema_version={schema_version!r}.")
+    categories = prior.get("categories")
+    if not isinstance(categories, dict) or not categories:
+        raise _instruction_prior_error("categories must exist and be non-empty.")
+    entry = categories.get(category)
+    if not isinstance(entry, dict):
+        raise _instruction_prior_error(f"categories[{category!r}] is missing or invalid.")
+
+    fg_modes = to_plain_list(entry.get("basis_fg_mask_prob"))
+    if not isinstance(fg_modes, list) or not fg_modes:
+        raise _instruction_prior_error(f"categories[{category!r}].basis_fg_mask_prob must be non-empty [K,1,20,20].")
+    if not all(_is_shape_1_20_20(mode) for mode in fg_modes):
+        raise _instruction_prior_error(f"categories[{category!r}].basis_fg_mask_prob must have shape [K,1,20,20].")
+    mode_count = len(fg_modes)
+    if mode_count <= 0:
+        raise _instruction_prior_error("K must be > 0.")
+
+    actual_label_prob_key = label_prob_key
+    label_modes = to_plain_list(entry.get(actual_label_prob_key))
+    if not isinstance(label_modes, list) or not label_modes:
+        fallback_label_key = "basis_label_prob_16_calibrated" if actual_label_prob_key == "basis_label_prob_16" else "basis_label_prob_16"
+        label_modes = to_plain_list(entry.get(fallback_label_key))
+        actual_label_prob_key = fallback_label_key
+    if not isinstance(label_modes, list) or len(label_modes) != mode_count:
+        raise _instruction_prior_error(
+            f"categories[{category!r}] must contain basis_label_prob_16 or basis_label_prob_16_calibrated with K={mode_count}."
+        )
+    if not all(_is_shape_16_20_20(mode) for mode in label_modes):
+        raise _instruction_prior_error(f"categories[{category!r}].{actual_label_prob_key} must have shape [K,16,20,20].")
+
+    actual_mode_prior_key = mode_prior_key
+    raw_mode_prior = entry.get(actual_mode_prior_key)
+    if raw_mode_prior is None:
+        fallback_mode_key = "mode_prior_raw" if actual_mode_prior_key == "mode_prior_smoothed" else "mode_prior_smoothed"
+        raw_mode_prior = entry.get(fallback_mode_key)
+        actual_mode_prior_key = fallback_mode_key
+    if raw_mode_prior is None:
+        raise _instruction_prior_error(f"categories[{category!r}] must contain mode_prior_smoothed or mode_prior_raw.")
+    mode_prior, warnings, mode_stats = _normalize_instruction_mode_prior(raw_mode_prior, mode_count)
+    return {
+        "prior": prior,
+        "entry": entry,
+        "fg_modes": fg_modes,
+        "label_modes": label_modes,
+        "mode_prior": mode_prior,
+        "warnings": warnings,
+        "num_modes": mode_count,
+        "schema_version": schema_version,
+        "num_categories": len(categories),
+        "label_prob_key": actual_label_prob_key,
+        "mode_prior_key": actual_mode_prior_key,
+        **mode_stats,
+    }
 
 
 def _format_cache_field_path(parts: list[str | int]) -> str:

@@ -51,6 +51,14 @@ def _build_category_mapping(train_manifest: Path, val_manifest: Path | None) -> 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train foreground-canonical planner.")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--train-cache", type=Path, default=None)
+    parser.add_argument("--val-cache", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--prior-source", type=str, default=None, choices=["category_kmeans", "instruction_matrix_grammar"])
+    parser.add_argument("--prior-mode-sampling", type=str, default=None, choices=["sample", "top", "deterministic", "smoothed_prior"])
+    parser.add_argument("--fallback-if-missing", dest="fallback_if_missing", action="store_true", default=None)
+    parser.add_argument("--no-fallback-if-missing", dest="fallback_if_missing", action="store_false")
+    parser.add_argument("--max-steps", type=int, default=None)
     return parser
 
 
@@ -323,6 +331,28 @@ def _resolve_loss_weights(train_cf: dict[str, object]) -> dict[str, float]:
     return resolved
 
 
+def _planner_prior_settings(config: dict[str, object], train_cf: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
+    prior_cf = config.get("instruction_matrix_grammar_prior", {}) if isinstance(config.get("instruction_matrix_grammar_prior", {}), dict) else {}
+    planner_prior_cf = prior_cf.get("planner_prior", {}) if isinstance(prior_cf.get("planner_prior", {}), dict) else {}
+    prior_source = str(args.prior_source or train_cf.get("prior_source", "category_kmeans"))
+    if bool(train_cf.get("use_instruction_grammar_prior", False)) and args.prior_source is None:
+        prior_source = "instruction_matrix_grammar"
+    prior_mode_sampling = str(args.prior_mode_sampling or train_cf.get("prior_mode_sampling", planner_prior_cf.get("sample_mode_strategy_train", "sample")))
+    if prior_mode_sampling == "smoothed_prior":
+        prior_mode_sampling = str(planner_prior_cf.get("sample_mode_strategy_train", "sample"))
+    fallback_if_missing = bool(planner_prior_cf.get("fallback_if_missing", True))
+    if args.fallback_if_missing is not None:
+        fallback_if_missing = bool(args.fallback_if_missing)
+    return {
+        "prior_source": prior_source,
+        "prior_mode_sampling": prior_mode_sampling,
+        "prior_label_prob_key": str(train_cf.get("prior_label_prob_key", planner_prior_cf.get("label_prob_key", "basis_label_prob_16"))),
+        "mode_prior_key": str(planner_prior_cf.get("mode_prior_key", "mode_prior_smoothed")),
+        "fallback_prior_source": str(train_cf.get("fallback_prior_source", planner_prior_cf.get("fallback_source", "category_kmeans"))),
+        "fallback_if_missing": fallback_if_missing,
+    }
+
+
 def _evaluate_loader(model: object, loader: object, device: object, torch: object, functional: object, ignore_index: int, fg_label_weight: float) -> dict[str, float]:
     model.eval()
     metric_state = _init_generated_metric_state()
@@ -393,19 +423,25 @@ def main(argv: list[str] | None = None) -> int:
     train_cf["fg_label_weight"] = resolved_loss_weights["fg_label_weight"]
     train_manifest = Path(data_cf["train_manifest"])
     val_manifest = Path(data_cf["val_manifest"])
-    train_cache = Path(data_cf["cache_dir"]) / "foreground_cache_train.pt"
-    val_cache = Path(data_cf["cache_dir"]) / "foreground_cache_val.pt"
+    train_cache = Path(args.train_cache or (Path(data_cf["cache_dir"]) / "foreground_cache_train.pt"))
+    val_cache = Path(args.val_cache or (Path(data_cf["cache_dir"]) / "foreground_cache_val.pt"))
+    if args.output_dir is not None:
+        train_cf["output_dir"] = str(args.output_dir)
+    prior_settings = _planner_prior_settings(config, train_cf, args)
+    max_steps = int(args.max_steps if args.max_steps is not None else (train_cf.get("max_steps_smoke") or 0))
     mapping = _build_category_mapping(train_manifest, val_manifest)
     category_to_id = cast(dict[str, int], mapping["category_to_id"])
 
     torch, optim = _require_torch()
     device = _resolve_device(torch, str(train_cf["device"]))
-    train_loader, train_dataset = build_dataloader(train_manifest, train_cache, batch_size=int(train_cf["batch_size"]), shuffle=True, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]), exclude_unseen_categories=False)
-    val_loader, val_dataset = build_dataloader(val_manifest, val_cache, batch_size=int(train_cf["batch_size"]), shuffle=False, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]), exclude_unseen_categories=True)
+    train_loader, train_dataset = build_dataloader(train_manifest, train_cache, batch_size=int(train_cf["batch_size"]), shuffle=True, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]), exclude_unseen_categories=False, **prior_settings)
+    val_prior_settings = {**prior_settings, "prior_mode_sampling": "top"}
+    val_loader, val_dataset = build_dataloader(val_manifest, val_cache, batch_size=int(train_cf["batch_size"]), shuffle=False, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]), exclude_unseen_categories=True, **val_prior_settings)
     _require_cache_payload_fields(train_dataset.cache_payload, context="Train foreground cache")
     _require_cache_payload_fields(val_dataset.cache_payload, context="Val foreground cache")
     unseen_val_categories = list(val_dataset.skipped_unseen_categories)
     val_total_items = len(load_manifest(val_manifest))
+    train_shape_sample = train_dataset[0]
     print(
         format_metric_line(
             "foreground-train-init:",
@@ -420,6 +456,15 @@ def main(argv: list[str] | None = None) -> int:
                 ("categories", len(category_to_id)),
                 ("unseen_val_categories", unseen_val_categories),
                 ("category_to_num_modes", train_dataset.cache_payload["category_to_num_modes"]),
+                ("planner_prior_source", prior_settings["prior_source"]),
+                ("prior_label_prob_key", prior_settings["prior_label_prob_key"]),
+                ("prior_mode_sampling", prior_settings["prior_mode_sampling"]),
+                ("mode_prior_key", prior_settings["mode_prior_key"]),
+                ("fallback_if_missing", prior_settings["fallback_if_missing"]),
+                ("instruction_grammar_schema", (train_dataset.cache_payload.get("instruction_matrix_grammar_prior", {}) if isinstance(train_dataset.cache_payload.get("instruction_matrix_grammar_prior", {}), dict) else {}).get("schema_version")),
+                ("instruction_grammar_categories", len((train_dataset.cache_payload.get("instruction_matrix_grammar_prior", {}) if isinstance(train_dataset.cache_payload.get("instruction_matrix_grammar_prior", {}), dict) else {}).get("categories", {}))),
+                ("fallback_count", train_dataset.prior_debug_summary()["fallback_count"]),
+                ("max_steps", max_steps if max_steps > 0 else "none"),
                 ("mask_bce_weight", resolved_loss_weights["mask_bce_weight"]),
                 ("mask_dice_weight", resolved_loss_weights["mask_dice_weight"]),
                 ("mask_soft_iou_weight", resolved_loss_weights["mask_soft_iou_weight"]),
@@ -436,9 +481,9 @@ def main(argv: list[str] | None = None) -> int:
         "hidden_dim": int(planner_cf["hidden_dim"]),
         "category_embed_dim": int(planner_cf["category_embed_dim"]),
         "mode_embed_dim": int(planner_cf["mode_embed_dim"]),
-        "grammar_dim": len(train_dataset[0]["grammar_signature"]),
-        "adjacency_dim": len(train_dataset[0]["adjacency_signature"]),
-        "bbox_dim": len(train_dataset[0]["bbox_stats"]),
+        "grammar_dim": len(train_shape_sample["grammar_signature"]),
+        "adjacency_dim": len(train_shape_sample["adjacency_signature"]),
+        "bbox_dim": len(train_shape_sample["bbox_stats"]),
     }
     model = ForegroundCanonicalPlanner(
         **model_kwargs,
@@ -451,14 +496,17 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     best_metric_name = "val_sampled_valid_foreground_rate"
     best_metric_value = float("-inf")
+    global_step = 0
 
     for epoch in range(int(train_cf["epochs"])):
         print(f"\nepoch {epoch + 1}/{int(train_cf['epochs'])}")
         model.train()
-        total_loss = 0.0
+        train_loss_sum = 0.0
         metric_state = _init_generated_metric_state()
-        batch_step_count = 0
+        train_batch_count = 0
         for batch in train_loader:
+            if max_steps > 0 and global_step >= max_steps:
+                break
             local_z = batch["local_z"].to(device)
             mode_mask = batch["mode_mask"].to(device)
             valid_mode_counts = mode_mask.sum(dim=-1)
@@ -511,8 +559,9 @@ def main(argv: list[str] | None = None) -> int:
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            total_loss += float(loss.item())
-            batch_step_count += 1
+            global_step += 1
+            train_loss_sum += float(loss.item())
+            train_batch_count += 1
             losses = {
                 "mask_bce": float(fg_mask_bce.item()),
                 "mask_dice": float(fg_mask_dice.item()),
@@ -534,14 +583,18 @@ def main(argv: list[str] | None = None) -> int:
                 "fg-train",
                 int(min(len(train_loader), math.ceil(batch_count))),
                 len(train_loader),
-                f"loss={total_loss / max(1, batch_step_count):.4f} raw_fg_ce={losses['raw_fg_ce']:.4f} weighted_fg_ce={losses['weighted_fg_ce']:.4f}",
+                f"loss={train_loss_sum / max(1, train_batch_count):.4f} raw_fg_ce={losses['raw_fg_ce']:.4f} weighted_fg_ce={losses['weighted_fg_ce']:.4f}",
             )
         finish_progress()
+        prior_debug = train_dataset.prior_debug_summary()
+        print(format_metric_line("planner-prior:", [("source_counts", prior_debug["prior_source_counts"]), ("fallback_if_missing", prior_debug["fallback_if_missing"]), ("fallback_count", prior_debug["fallback_count"]), ("warnings", prior_debug["warnings"]), ("mode_prior_key", prior_settings["mode_prior_key"])]))
         train_summary = _finalize_generated_metrics(metric_state)
         val_summary = _evaluate_loader(model, val_loader, device, torch, functional, ignore_index, resolved_loss_weights["fg_label_weight"]) if len(val_dataset) > 0 else {}
         summary = {
             "epoch": epoch + 1,
-            "train_loss": total_loss / float(max(1, len(train_loader))),
+            "train_loss": train_loss_sum / float(max(1, train_batch_count)),
+            "train_loss_sum": train_loss_sum,
+            "train_batch_count": int(train_batch_count),
             **{f"train_{key}": value for key, value in train_summary.items()},
             **{f"val_{key}": value for key, value in val_summary.items()},
             "val_seen_count": len(val_dataset),
@@ -549,6 +602,8 @@ def main(argv: list[str] | None = None) -> int:
             "unseen_val_categories": unseen_val_categories,
             "requires_cache_rebuild": True,
             "checkpoint_compatibility": "spatial-centroid-v2",
+            "planner_prior": prior_debug,
+            "global_step": int(global_step),
         }
         history.append(summary)
         metric_items = [
@@ -607,14 +662,16 @@ def main(argv: list[str] | None = None) -> int:
             "best_metric_name": best_metric_name,
             "best_metric_value": best_metric_value,
             "history": history,
-            "grammar_signature_dim": len(train_dataset[0]["grammar_signature"]),
-            "adjacency_signature_dim": len(train_dataset[0]["adjacency_signature"]),
-            "bbox_dim": len(train_dataset[0]["bbox_stats"]),
+            "grammar_signature_dim": len(train_shape_sample["grammar_signature"]),
+            "adjacency_signature_dim": len(train_shape_sample["adjacency_signature"]),
+            "bbox_dim": len(train_shape_sample["bbox_stats"]),
             "max_num_modes": int(planner_cf["num_modes_per_category"]),
             "spatial_condition_channels": 17,
             "model_kwargs": model_kwargs,
             "checkpoint_compatibility": "spatial-centroid-v2",
             "requires_cache_rebuild": True,
+            "planner_prior": prior_debug,
+            "global_step": int(global_step),
         }
         checkpoint_last_path = output_dir / "checkpoint_last.pt"
         getattr(torch, "save")(checkpoint_payload, checkpoint_last_path)
@@ -627,6 +684,9 @@ def main(argv: list[str] | None = None) -> int:
             best_path = output_dir / "checkpoint.pt"
             getattr(torch, "save")(checkpoint_payload, best_path)
             print(f"saved best checkpoint: {best_path}")
+        if max_steps > 0 and global_step >= max_steps:
+            print(f"stopping early at max_steps={max_steps}")
+            break
 
     metrics = {
         "history": history,
@@ -642,9 +702,9 @@ def main(argv: list[str] | None = None) -> int:
         "descriptor_global_std": train_dataset.cache_payload["descriptor_global_std"],
         "category_foreground_area_stats": train_dataset.cache_payload["category_foreground_area_stats"],
         "train_cache_path": str(train_cache),
-        "grammar_signature_dim": len(train_dataset[0]["grammar_signature"]),
-        "adjacency_signature_dim": len(train_dataset[0]["adjacency_signature"]),
-        "bbox_dim": len(train_dataset[0]["bbox_stats"]),
+        "grammar_signature_dim": len(train_shape_sample["grammar_signature"]),
+        "adjacency_signature_dim": len(train_shape_sample["adjacency_signature"]),
+        "bbox_dim": len(train_shape_sample["bbox_stats"]),
         "max_num_modes": int(planner_cf["num_modes_per_category"]),
         "best_metric_name": best_metric_name,
         "best_metric_value": best_metric_value,
@@ -653,6 +713,8 @@ def main(argv: list[str] | None = None) -> int:
         "spatial_condition_channels": 17,
         "checkpoint_compatibility": "spatial-centroid-v2",
         "requires_cache_rebuild": True,
+        "planner_prior": train_dataset.prior_debug_summary(),
+        "global_step": int(global_step),
     }
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
     return 0

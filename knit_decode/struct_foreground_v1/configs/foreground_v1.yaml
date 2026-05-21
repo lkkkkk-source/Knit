@@ -192,6 +192,17 @@ nmf_dictionary:
 instruction_matrix_grammar_prior:
   enabled: true
   schema_version: foreground_v1_instruction_matrix_grammar_prior_v1
+  use_for_planner_smoke: true
+  planner_prior:
+    enabled: true
+    label_prob_key: basis_label_prob_16
+    mode_prior_key: mode_prior_smoothed
+    fallback_if_missing: true
+    fallback_source: category_kmeans
+    sample_mode_strategy_train: sample
+    sample_mode_strategy_eval: sample
+    sample_mode_strategy_deterministic: top
+    eps: 1.0e-8
   mode_count_default: 8
   mode_count_by_category:
     Cable1: 12
@@ -366,6 +377,12 @@ grammar_rerank:
 
 train:
   output_dir: knit_decode/struct_foreground_v1/runs/foreground_planner_v1
+  prior_source: instruction_matrix_grammar
+  prior_mode_sampling: smoothed_prior
+  prior_label_prob_key: basis_label_prob_16
+  fallback_prior_source: category_kmeans
+  use_instruction_grammar_prior: true
+  max_steps_smoke: null
   epochs: 20
   batch_size: 32
   learning_rate: 0.0001
@@ -392,6 +409,12 @@ train:
   persistent_workers: false
 
 sampling:
+  prior_source: instruction_matrix_grammar
+  prior_mode_sampling: smoothed_prior
+  use_instruction_grammar_prior: true
   num_candidates: 64
   planner_oversample: 128
   num_valid_plans: 32
+
+runs:
+  smoke_output_dir: knit_decode/struct_foreground_v1/runs/foreground_planner_v1_instruction_grammar_smoke
