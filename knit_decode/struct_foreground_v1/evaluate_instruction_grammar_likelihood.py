@@ -35,6 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split-name", type=str, default="val")
     parser.add_argument("--output-dir", type=Path, default=Path("output/struct_foreground_v1/instruction_grammar_likelihood/val"))
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--categories", type=str, default="")
+    parser.add_argument("--max-samples-per-category", type=int, default=None)
     parser.add_argument("--eps", type=float, default=1.0e-6)
     parser.add_argument("--label-smoothing", type=float, default=1.0e-4)
     parser.add_argument("--mask-smoothing", type=float, default=1.0e-4)
@@ -48,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--compare-raw-calibrated", action="store_true")
     parser.add_argument("--sweep-calibration", action="store_true")
     parser.add_argument("--sweep-categories", type=str, default="")
+    parser.add_argument("--sweep-fast", action="store_true")
+    parser.add_argument("--sweep-progress", dest="sweep_progress", action="store_true", default=True)
+    parser.add_argument("--no-sweep-progress", dest="sweep_progress", action="store_false")
+    parser.add_argument("--sweep-partial-write", dest="sweep_partial_write", action="store_true", default=True)
+    parser.add_argument("--no-sweep-partial-write", dest="sweep_partial_write", action="store_false")
     parser.add_argument("--write-recommended-config", action="store_true")
     return parser
 
@@ -73,6 +80,39 @@ def _load_manifest(path: Path, max_samples: int | None = None) -> list[dict[str,
         if max_samples is not None and len(rows) >= int(max_samples):
             break
     return rows
+
+
+def _filter_manifest_rows(
+    rows: list[dict[str, Any]],
+    *,
+    categories: list[str],
+    max_samples: int | None,
+    max_samples_per_category: int | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    category_set = set(categories)
+    per_category_counts: Counter[str] = Counter()
+    out: list[dict[str, Any]] = []
+    skipped_by_category_filter = 0
+    skipped_by_per_category_cap = 0
+    for row in rows:
+        category = str(row.get("category", ""))
+        if category_set and category not in category_set:
+            skipped_by_category_filter += 1
+            continue
+        if max_samples_per_category is not None and per_category_counts[category] >= int(max_samples_per_category):
+            skipped_by_per_category_cap += 1
+            continue
+        out.append(row)
+        per_category_counts[category] += 1
+        if max_samples is not None and len(out) >= int(max_samples):
+            break
+    return out, {
+        "requested_categories": categories,
+        "rows_after_category_filter": int(len(out)),
+        "category_counts_after_filter": {category: int(count) for category, count in sorted(per_category_counts.items())},
+        "skipped_by_category_filter": int(skipped_by_category_filter),
+        "skipped_by_per_category_cap": int(skipped_by_per_category_cap),
+    }
 
 
 def _infer_manifest_root(manifest_path: Path, rows: list[dict[str, Any]]) -> Path:
@@ -1051,6 +1091,136 @@ def _write_recommended_config_patch(path: Path, recommendations: dict[str, Any])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _sweep_fieldnames() -> list[str]:
+    return [
+        "category",
+        "alpha",
+        "beta",
+        "mode_count",
+        "mode_subset",
+        "mixture_nll_per_cell",
+        "mask_nll_per_cell",
+        "label_nll_per_fg",
+        "max_mode_fraction",
+        "used_modes",
+        "unused_fraction",
+        "mode_usage_entropy",
+        "normalized_mode_usage_entropy",
+        "risk_flags",
+        "passes_likelihood_gate",
+        "passes_usage_gate",
+        "score",
+        "assignment_rule",
+        "counts_json",
+    ]
+
+
+def _sweep_summary_lines(
+    *,
+    args: argparse.Namespace,
+    cleanup_cf: dict[str, Any],
+    val_tuned_risk: bool,
+    num_candidates: int,
+    estimated_global: dict[str, Any] | None,
+    requested: list[str],
+    recommendations: dict[str, Any],
+    warnings: list[str],
+    skip_reasons: dict[str, str],
+    partial: bool,
+) -> list[str]:
+    title = "# Calibration Sweep Summary (partial)" if partial else "# Calibration Sweep Summary"
+    lines = [
+        title,
+        "",
+        f"- split_name: {args.split_name}",
+        f"- diagnostic_only: {bool(cleanup_cf.get('diagnostic_only', True))}",
+        f"- val_tuned_risk: {val_tuned_risk}",
+        f"- num_candidates: {num_candidates}",
+    ]
+    if estimated_global is not None:
+        lines.extend(
+            [
+                f"- estimated_global_after_recommended_mixture: {float(estimated_global['mean_mixture_nll_per_cell']):.6f}",
+                f"- estimated_global_after_recommended_label: {float(estimated_global['mean_label_nll_per_fg']):.6f}",
+                f"- estimated_global_passes_current_run_likelihood_gate: {estimated_global['passes_current_run_likelihood_gate']}",
+            ]
+        )
+    if warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+    if skip_reasons:
+        lines.extend(["", "## Skip Reasons", ""])
+        lines.extend(f"- {category}: {reason}" for category, reason in sorted(skip_reasons.items()))
+    if num_candidates == 0 and not skip_reasons:
+        lines.extend(["", "## Skip Reasons", "", "- no candidates were generated; check sweep categories, evaluated samples, and prior categories."])
+    lines.extend(["", "## Decisions", ""])
+    for category in requested:
+        payload = recommendations.get(category, {})
+        lines.append(
+            "- {category}: decision={decision} reason={reason} alpha={alpha} beta={beta} mode_count={mode_count} mix={mix} label={label} risks={risks}".format(
+                category=category,
+                decision=payload.get("decision", "pending" if partial else "none"),
+                reason=payload.get("reason", "pending" if partial else "none"),
+                alpha=payload.get("alpha", "n/a"),
+                beta=payload.get("beta", "n/a"),
+                mode_count=payload.get("mode_count", "n/a"),
+                mix=payload.get("mixture_nll_per_cell", "n/a"),
+                label=payload.get("label_nll_per_fg", "n/a"),
+                risks=payload.get("risk_flags", ""),
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- Candidates are post-hoc diagnostics over the cached grammar prior; they do not rebuild cache or alter the main config.",
+            "- Likelihood gates use current per-category likelihood plus the requested tolerances before applying mode-usage scoring.",
+            "- If split_name is val, recommendations are marked val_tuned_risk and should be verified on a separate split before treating them as final.",
+        ]
+    )
+    return lines
+
+
+def _write_sweep_partial(
+    output_dir: Path,
+    *,
+    args: argparse.Namespace,
+    cleanup_cf: dict[str, Any],
+    val_tuned_risk: bool,
+    requested: list[str],
+    results: list[dict[str, Any]],
+    recommendations: dict[str, Any],
+    warnings: list[str],
+    skip_reasons: dict[str, str],
+) -> None:
+    fieldnames = _sweep_fieldnames()
+    _write_csv(output_dir / "calibration_sweep_results.partial.csv", [{key: row.get(key, "") for key in fieldnames} for row in results], fieldnames)
+    lines = _sweep_summary_lines(
+        args=args,
+        cleanup_cf=cleanup_cf,
+        val_tuned_risk=val_tuned_risk,
+        num_candidates=len(results),
+        estimated_global=None,
+        requested=requested,
+        recommendations=recommendations,
+        warnings=warnings,
+        skip_reasons=skip_reasons,
+        partial=True,
+    )
+    (output_dir / "calibration_sweep_summary.partial.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _sweep_fast_values(values: list[float | int], current: float | int) -> list[float | int]:
+    out: list[float | int] = [current]
+    normalized = list(dict.fromkeys(values))
+    if normalized:
+        out.append(normalized[0])
+    if len(normalized) > 1:
+        out.append(normalized[-1])
+    return list(dict.fromkeys(out))
+
+
 def _run_calibration_sweep(
     *,
     args: argparse.Namespace,
@@ -1066,18 +1236,50 @@ def _run_calibration_sweep(
     if not requested:
         risk_categories = cleanup_cf.get("risk_categories", {}) if isinstance(cleanup_cf.get("risk_categories", {}), dict) else {}
         requested = [category for category, enabled in risk_categories.items() if bool(enabled)]
+    missing_prior_categories = [category for category in requested if category not in categories]
     requested = [category for category in requested if category in categories]
+    evaluated_categories = {str(sample["category"]) for sample in eval_samples}
     results: list[dict[str, Any]] = []
     recommendations: dict[str, Any] = {}
     before_after_rows: list[dict[str, Any]] = []
+    warnings: list[str] = [f"sweep category {category} not present in prior categories." for category in missing_prior_categories]
+    skip_reasons: dict[str, str] = {category: "not_present_in_prior_categories" for category in missing_prior_categories}
     val_tuned_risk = str(args.split_name).lower() == "val"
     for category in requested:
         entry = categories.get(category)
         if not isinstance(entry, dict):
+            skip_reasons[category] = "prior_category_payload_invalid"
+            continue
+        if category not in evaluated_categories:
+            warning = f"sweep category {category} not present in evaluated samples."
+            warnings.append(warning)
+            skip_reasons[category] = "not_present_in_evaluated_samples"
+            recommendations[category] = {
+                "category": category,
+                "decision": "needs_inspect",
+                "reason": "not_present_in_evaluated_samples",
+                "skip_reason": "not_present_in_evaluated_samples",
+                "val_tuned_risk": bool(val_tuned_risk),
+            }
+            if bool(args.sweep_progress):
+                print(f"[sweep] category={category} skip_reason=not_present_in_evaluated_samples", flush=True)
+            if bool(args.sweep_partial_write):
+                _write_sweep_partial(
+                    args.output_dir,
+                    args=args,
+                    cleanup_cf=cleanup_cf,
+                    val_tuned_risk=val_tuned_risk,
+                    requested=requested,
+                    results=results,
+                    recommendations=recommendations,
+                    warnings=warnings,
+                    skip_reasons=skip_reasons,
+                )
             continue
         cat_samples = [sample for sample in eval_samples if str(sample["category"]) == category]
         cat_primary_rows = [row for row in primary_rows if str(row["category"]) == category]
         if not cat_samples or not cat_primary_rows:
+            skip_reasons[category] = "no_evaluated_samples_after_filter"
             continue
         raw_fg_modes, raw_label_modes, _ = _validate_modes(
             entry,
@@ -1098,6 +1300,17 @@ def _run_calibration_sweep(
         if mode_count_full not in mode_values:
             mode_values.append(mode_count_full)
         mode_values = sorted(set(mode_values))
+        if bool(args.sweep_fast):
+            alpha_values = [float(value) for value in _sweep_fast_values(alpha_values, current_alpha)]
+            beta_values = [float(value) for value in _sweep_fast_values(beta_values, current_beta)]
+            mode_values = [int(value) for value in _sweep_fast_values(mode_values, mode_count_full)]
+        alpha_values = sorted(set(alpha_values))
+        beta_values = sorted(set(beta_values))
+        mode_values = sorted(set(mode_values))
+        total_candidates = len(alpha_values) * len(beta_values) * len(mode_values)
+        candidate_index = 0
+        if bool(args.sweep_progress):
+            print(f"[sweep] category={category} samples={len(cat_samples)} candidates={total_candidates}", flush=True)
         cat_before = {
             "category": category,
             "stage": "before",
@@ -1114,10 +1327,17 @@ def _run_calibration_sweep(
             "risk_flags": " ".join(mode_usage_payload.get(category, {}).get("risk_flags", [])),
         }
         before_after_rows.append(cat_before)
-        for alpha in sorted(set(alpha_values)):
+        for alpha in alpha_values:
             label_modes = _calibrate_label_modes_list(raw_label_modes, category_hist, alpha)
-            for beta in sorted(set(beta_values)):
-                for candidate_count in sorted(set(mode_values)):
+            for beta in beta_values:
+                for candidate_count in mode_values:
+                    candidate_index += 1
+                    if bool(args.sweep_progress):
+                        print(
+                            f"[sweep] category={category} candidate={candidate_index}/{total_candidates} "
+                            f"alpha={alpha} beta={beta} mode_count={candidate_count}",
+                            flush=True,
+                        )
                     subset = _top_used_subset(cat_primary_rows, mode_count_full, candidate_count)
                     if not subset:
                         continue
@@ -1153,6 +1373,18 @@ def _run_calibration_sweep(
                         baseline_label=float(cat_before["label_nll_per_fg"]),
                     )
                     results.append(candidate)
+                    if bool(args.sweep_partial_write) and (candidate_index == total_candidates or candidate_index % 5 == 0):
+                        _write_sweep_partial(
+                            args.output_dir,
+                            args=args,
+                            cleanup_cf=cleanup_cf,
+                            val_tuned_risk=val_tuned_risk,
+                            requested=requested,
+                            results=results,
+                            recommendations=recommendations,
+                            warnings=warnings,
+                            skip_reasons=skip_reasons,
+                        )
         cat_results = [row for row in results if str(row["category"]) == category]
         feasible = [row for row in cat_results if bool(row["passes_likelihood_gate"])]
         usage_feasible = [row for row in feasible if bool(row["passes_usage_gate"])]
@@ -1184,27 +1416,31 @@ def _run_calibration_sweep(
                     "risk_flags": str(selected["risk_flags"]),
                 }
             )
-    fieldnames = [
-        "category",
-        "alpha",
-        "beta",
-        "mode_count",
-        "mode_subset",
-        "mixture_nll_per_cell",
-        "mask_nll_per_cell",
-        "label_nll_per_fg",
-        "max_mode_fraction",
-        "used_modes",
-        "unused_fraction",
-        "mode_usage_entropy",
-        "normalized_mode_usage_entropy",
-        "risk_flags",
-        "passes_likelihood_gate",
-        "passes_usage_gate",
-        "score",
-        "assignment_rule",
-        "counts_json",
-    ]
+        else:
+            recommendations[category] = {
+                "category": category,
+                "decision": "no_change",
+                "reason": "no_candidate_generated",
+                "skip_reason": "no_candidate_generated",
+                "val_tuned_risk": bool(val_tuned_risk),
+            }
+            skip_reasons[category] = "no_candidate_generated"
+        if bool(args.sweep_progress):
+            payload = recommendations.get(category, {})
+            print(f"[sweep] category={category} done decision={payload.get('decision')} reason={payload.get('reason')} candidates={len(cat_results)}", flush=True)
+        if bool(args.sweep_partial_write):
+            _write_sweep_partial(
+                args.output_dir,
+                args=args,
+                cleanup_cf=cleanup_cf,
+                val_tuned_risk=val_tuned_risk,
+                requested=requested,
+                results=results,
+                recommendations=recommendations,
+                warnings=warnings,
+                skip_reasons=skip_reasons,
+            )
+    fieldnames = _sweep_fieldnames()
     _write_csv(args.output_dir / "calibration_sweep_results.csv", [{key: row.get(key, "") for key in fieldnames} for row in results], fieldnames)
     _write_csv(
         args.output_dir / "mode_usage_before_after.csv",
@@ -1245,49 +1481,24 @@ def _run_calibration_sweep(
         "estimated_global_after_recommended": estimated_global,
         "recommendations": recommendations,
         "decisions": {category: {"decision": payload.get("decision"), "reason": payload.get("reason"), "justified_low_mode_diversity": payload.get("justified_low_mode_diversity", False)} for category, payload in recommendations.items()},
+        "warnings": warnings,
+        "skip_reasons": skip_reasons,
     }
     save_json(args.output_dir / "calibration_sweep_summary.json", _json_safe(sweep_summary))
     save_json(args.output_dir / "recommended_calibration_by_category.json", _json_safe(recommendations))
     if bool(args.write_recommended_config):
         _write_recommended_config_patch(args.output_dir / "recommended_config_patch.yaml", recommendations)
-    lines = [
-        "# Calibration Sweep Summary",
-        "",
-        f"- split_name: {args.split_name}",
-        f"- diagnostic_only: {bool(cleanup_cf.get('diagnostic_only', True))}",
-        f"- val_tuned_risk: {val_tuned_risk}",
-        f"- num_candidates: {len(results)}",
-        f"- estimated_global_after_recommended_mixture: {estimated_global['mean_mixture_nll_per_cell']:.6f}",
-        f"- estimated_global_after_recommended_label: {estimated_global['mean_label_nll_per_fg']:.6f}",
-        f"- estimated_global_passes_current_run_likelihood_gate: {estimated_global['passes_current_run_likelihood_gate']}",
-        "",
-        "## Decisions",
-        "",
-    ]
-    for category in requested:
-        payload = recommendations.get(category, {})
-        lines.append(
-            "- {category}: decision={decision} reason={reason} alpha={alpha} beta={beta} mode_count={mode_count} mix={mix} label={label} risks={risks}".format(
-                category=category,
-                decision=payload.get("decision", "none"),
-                reason=payload.get("reason", "none"),
-                alpha=payload.get("alpha", "n/a"),
-                beta=payload.get("beta", "n/a"),
-                mode_count=payload.get("mode_count", "n/a"),
-                mix=payload.get("mixture_nll_per_cell", "n/a"),
-                label=payload.get("label_nll_per_fg", "n/a"),
-                risks=payload.get("risk_flags", ""),
-            )
-        )
-    lines.extend(
-        [
-            "",
-            "## Interpretation",
-            "",
-            "- Candidates are post-hoc diagnostics over the cached grammar prior; they do not rebuild cache or alter the main config.",
-            "- Likelihood gates use current per-category likelihood plus the requested tolerances before applying mode-usage scoring.",
-            "- If split_name is val, recommendations are marked val_tuned_risk and should be verified on a separate split before treating them as final.",
-        ]
+    lines = _sweep_summary_lines(
+        args=args,
+        cleanup_cf=cleanup_cf,
+        val_tuned_risk=val_tuned_risk,
+        num_candidates=len(results),
+        estimated_global=estimated_global,
+        requested=requested,
+        recommendations=recommendations,
+        warnings=warnings,
+        skip_reasons=skip_reasons,
+        partial=False,
     )
     (args.output_dir / "calibration_sweep_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return sweep_summary
@@ -1351,7 +1562,14 @@ def main(argv: list[str] | None = None) -> int:
     dictionary_bank = cache.get("dictionary_bank") if isinstance(cache.get("dictionary_bank"), dict) else None
     dictionary_categories = dictionary_bank.get("categories", {}) if isinstance(dictionary_bank, dict) and isinstance(dictionary_bank.get("categories", {}), dict) else {}
 
-    rows = _load_manifest(args.manifest, args.max_samples)
+    all_rows = _load_manifest(args.manifest, None)
+    category_filter = _parse_category_list(str(args.categories))
+    rows, filter_summary = _filter_manifest_rows(
+        all_rows,
+        categories=category_filter,
+        max_samples=args.max_samples,
+        max_samples_per_category=args.max_samples_per_category,
+    )
     manifest_root = _infer_manifest_root(args.manifest, rows)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     global_stats = cache.get("category_foreground_area_stats", {}) if isinstance(cache.get("category_foreground_area_stats", {}), dict) else {}
@@ -1553,7 +1771,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     summary = {
         "split_name": str(args.split_name),
-        "rows_read": int(len(rows)),
+        "rows_read": int(len(all_rows)),
+        "rows_after_category_filter": int(len(rows)),
+        "category_filter": filter_summary,
         "evaluated": int(len(per_sample_rows)),
         "skipped_unknown_category": int(skipped_unknown_category),
         "skipped_no_modes": int(skipped_no_modes),
@@ -1580,6 +1800,9 @@ def main(argv: list[str] | None = None) -> int:
             "w_label": float(args.w_label),
             "use_calibrated_label_prob": bool(args.use_calibrated_label_prob),
             "use_smoothed_mode_prior": bool(args.use_smoothed_mode_prior),
+            "categories": category_filter,
+            "max_samples": int(args.max_samples) if args.max_samples is not None else None,
+            "max_samples_per_category": int(args.max_samples_per_category) if args.max_samples_per_category is not None else None,
         },
     }
     if args.sweep_calibration:
@@ -1598,6 +1821,8 @@ def main(argv: list[str] | None = None) -> int:
             "recommended_config_patch_path": str(args.output_dir / "recommended_config_patch.yaml") if bool(args.write_recommended_config) else None,
             "val_tuned_risk": bool(sweep_summary.get("val_tuned_risk", False)),
             "decisions": sweep_summary.get("decisions", {}),
+            "warnings": sweep_summary.get("warnings", []),
+            "skip_reasons": sweep_summary.get("skip_reasons", {}),
         }
 
     save_json(args.output_dir / "summary.json", _json_safe(summary))
@@ -1692,7 +1917,9 @@ def main(argv: list[str] | None = None) -> int:
         "# Instruction Grammar Likelihood Summary",
         "",
         f"split_name: {args.split_name}",
-        f"rows_read: {len(rows)}",
+        f"rows_read: {len(all_rows)}",
+        f"rows_after_category_filter: {len(rows)}",
+        f"category_filter: {json.dumps(_json_safe(filter_summary), ensure_ascii=False)}",
         f"evaluated: {len(per_sample_rows)}",
         f"skipped_unknown_category: {skipped_unknown_category}",
         f"skipped_no_modes: {skipped_no_modes}",
@@ -1728,6 +1955,18 @@ def main(argv: list[str] | None = None) -> int:
                 improves=row["instruction_improves"],
             )
         )
+    if args.sweep_calibration:
+        sweep_payload = summary.get("calibration_sweep", {})
+        if isinstance(sweep_payload, dict):
+            summary_lines.extend(["", "## Calibration Sweep Warnings", ""])
+            warnings = sweep_payload.get("warnings", [])
+            skip_reasons = sweep_payload.get("skip_reasons", {})
+            if warnings:
+                summary_lines.extend(f"- {warning}" for warning in warnings)
+            if isinstance(skip_reasons, dict) and skip_reasons:
+                summary_lines.extend(f"- {category}: {reason}" for category, reason in sorted(skip_reasons.items()))
+            if not warnings and not skip_reasons:
+                summary_lines.append("- none")
     (args.output_dir / "summary.md").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     print(
         "[eval-igr-likelihood] done "
