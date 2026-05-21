@@ -9,7 +9,7 @@ from typing import cast
 from .compose_foreground import compose_foreground
 from .dataset import build_dataloader, load_manifest
 from .models.foreground_planner import ForegroundCanonicalPlanner
-from .utils import finish_progress, foreground_area, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode
+from .utils import cuda_diagnostics, finish_progress, foreground_area, format_device_name, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, model_parameter_device, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, resolve_device
 
 
 def _require_torch() -> tuple[object, object]:
@@ -21,15 +21,6 @@ def _require_torch() -> tuple[object, object]:
     except ImportError as error:
         raise ImportError("PyTorch is required for train_foreground_planner.") from error
     return torch, optim
-
-
-def _resolve_device(torch: object, device_name: str) -> object:
-    device_cls = getattr(torch, "device")
-    if device_name == "cpu":
-        return device_cls("cpu")
-    if not getattr(torch, "cuda").is_available():
-        raise RuntimeError(f"Requested device {device_name!r}, but CUDA is not available.")
-    return device_cls(device_name)
 
 
 def _build_category_mapping(train_manifest: Path, val_manifest: Path | None) -> dict[str, object]:
@@ -58,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prior-mode-sampling", type=str, default=None, choices=["sample", "top", "deterministic", "smoothed_prior"])
     parser.add_argument("--fallback-if-missing", dest="fallback_if_missing", action="store_true", default=None)
     parser.add_argument("--no-fallback-if-missing", dest="fallback_if_missing", action="store_false")
+    parser.add_argument("--device", type=str, default=None, help="Device override: auto, cuda, cuda:0, or cpu.")
     parser.add_argument("--max-steps", type=int, default=None)
     return parser
 
@@ -433,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     category_to_id = cast(dict[str, int], mapping["category_to_id"])
 
     torch, optim = _require_torch()
-    device = _resolve_device(torch, str(train_cf["device"]))
+    device = resolve_device(torch, str(args.device or train_cf.get("device", "auto")))
     train_loader, train_dataset = build_dataloader(train_manifest, train_cache, batch_size=int(train_cf["batch_size"]), shuffle=True, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]), exclude_unseen_categories=False, **prior_settings)
     val_prior_settings = {**prior_settings, "prior_mode_sampling": "top"}
     val_loader, val_dataset = build_dataloader(val_manifest, val_cache, batch_size=int(train_cf["batch_size"]), shuffle=False, category_to_id=category_to_id, num_workers=int(train_cf["num_workers"]), pin_memory=bool(train_cf["pin_memory"]), persistent_workers=bool(train_cf["persistent_workers"]), exclude_unseen_categories=True, **val_prior_settings)
@@ -489,6 +481,20 @@ def main(argv: list[str] | None = None) -> int:
         **model_kwargs,
     )
     model.to(device)
+    diag = cuda_diagnostics(torch)
+    print(
+        format_metric_line(
+            "train-device:",
+            [
+                ("device", format_device_name(device, torch)),
+                ("model-device", model_parameter_device(model)),
+                ("cuda_available", diag["cuda_available"]),
+                ("cuda_device_count", diag["cuda_device_count"]),
+                ("cuda_device_name", diag["cuda_device_name"]),
+                ("torch_version", diag["torch_version"]),
+            ],
+        )
+    )
     optimizer = getattr(optim, "AdamW")(model.parameters(), lr=float(train_cf["learning_rate"]), weight_decay=float(train_cf["weight_decay"]))
     functional = __import__("importlib").import_module("torch.nn.functional")
     history: list[dict[str, object]] = []

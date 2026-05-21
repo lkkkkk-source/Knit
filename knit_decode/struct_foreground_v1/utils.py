@@ -69,6 +69,54 @@ def format_metric_line(prefix: str, items: list[tuple[str, object]]) -> str:
     return " ".join(parts)
 
 
+def resolve_device(torch: object, device_name: str | None) -> object:
+    requested = "auto" if device_name is None else str(device_name).strip().lower()
+    device_cls = getattr(torch, "device")
+    cuda = getattr(torch, "cuda")
+    if requested == "auto":
+        return device_cls("cuda" if cuda.is_available() else "cpu")
+    if requested == "cpu":
+        return device_cls("cpu")
+    if requested == "cuda" or requested.startswith("cuda:"):
+        if not cuda.is_available():
+            raise RuntimeError("CUDA requested but torch.cuda.is_available() is False.")
+        return device_cls(requested)
+    raise ValueError(f"Unsupported device={device_name!r}. Expected auto, cuda, cuda:0, or cpu.")
+
+
+def cuda_diagnostics(torch: object) -> dict[str, object]:
+    cuda = getattr(torch, "cuda")
+    cuda_available = bool(cuda.is_available())
+    cuda_device_count = int(cuda.device_count()) if hasattr(cuda, "device_count") else 0
+    cuda_device_name = ""
+    if cuda_available and cuda_device_count > 0:
+        cuda_device_name = str(cuda.get_device_name(0))
+    return {
+        "cuda_available": cuda_available,
+        "cuda_device_count": cuda_device_count,
+        "cuda_device_name": cuda_device_name,
+        "torch_version": str(getattr(torch, "__version__", "unknown")),
+    }
+
+
+def format_device_name(device: object, torch: object) -> str:
+    text = str(device)
+    if text == "cuda":
+        current_index = 0
+        cuda = getattr(torch, "cuda")
+        if bool(cuda.is_available()) and hasattr(cuda, "current_device"):
+            current_index = int(cuda.current_device())
+        return f"cuda:{current_index}"
+    return text
+
+
+def model_parameter_device(model: object) -> str:
+    try:
+        return str(next(model.parameters()).device)
+    except StopIteration:
+        return "no-parameters"
+
+
 def resolve_canonical_mode(data_cf: dict[str, object]) -> str:
     if "canonical_mode" not in data_cf:
         raise ValueError("Config data.canonical_mode is required.")

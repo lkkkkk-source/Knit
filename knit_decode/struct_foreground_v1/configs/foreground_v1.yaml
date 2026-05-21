@@ -403,12 +403,13 @@ train:
     col_projection: 1.0
     grammar_signature: 1.0
     adjacency: 1.0
-  device: cpu
+  device: auto
   num_workers: 4
   pin_memory: false
   persistent_workers: false
 
 sampling:
+  device: auto
   prior_source: instruction_matrix_grammar
   prior_mode_sampling: smoothed_prior
   use_instruction_grammar_prior: true

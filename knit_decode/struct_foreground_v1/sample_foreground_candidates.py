@@ -7,7 +7,7 @@ from pathlib import Path
 from .compose_foreground import compose_foreground
 from .grammar_energy import GrammarEnergy, compute_candidate_descriptors
 from .inspect_foreground_planner import _require_torch
-from .utils import InstructionGrammarPriorError, bbox_from_mask, bbox_vector, build_planner_from_checkpoint_payload, checkpoint_get, finish_progress, foreground_area, foreground_descriptor, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map, validate_instruction_grammar_prior_category
+from .utils import InstructionGrammarPriorError, bbox_from_mask, bbox_vector, build_planner_from_checkpoint_payload, checkpoint_get, cuda_diagnostics, finish_progress, foreground_area, foreground_descriptor, format_device_name, format_metric_line, label_diversity_on_fg, load_config, mask_component_stats, model_parameter_device, normalized_l2_between, print_progress, require_centroid_sketch_fields, require_foreground_cache_fields, resolve_canonical_mode, resolve_device, save_binary_map, save_json, save_jsonl, save_label_grid_mosaic, save_label_map, validate_instruction_grammar_prior_category
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--category", type=str, required=True)
     parser.add_argument("--num-candidates", type=int, default=32)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--device", type=str, default=None, help="Device override: auto, cuda, cuda:0, or cpu.")
     parser.add_argument("--prior-source", type=str, default=None, choices=["category_kmeans", "instruction_matrix_grammar"])
     parser.add_argument("--prior-mode", type=str, default="sample", choices=["top", "sample", "all"])
     parser.add_argument("--fallback-if-missing", dest="fallback_if_missing", action="store_true", default=None)
@@ -385,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     planner_prior_cf = (config.get("instruction_matrix_grammar_prior", {}) if isinstance(config.get("instruction_matrix_grammar_prior", {}), dict) else {}).get("planner_prior", {})
     planner_prior_cf = planner_prior_cf if isinstance(planner_prior_cf, dict) else {}
     sampling_cf = config.get("sampling", {}) if isinstance(config.get("sampling", {}), dict) else {}
+    device = resolve_device(torch, str(args.device or sampling_cf.get("device", "auto")))
     prior_source = str(args.prior_source or sampling_cf.get("prior_source", "category_kmeans"))
     prior_mode_strategy = str(args.prior_mode)
     label_prob_key = str(planner_prior_cf.get("label_prob_key", "basis_label_prob_16"))
@@ -426,7 +428,8 @@ def main(argv: list[str] | None = None) -> int:
             f"category not available in trained foreground prior: {args.category}\n"
             f"available categories: {sorted(train_categories)}"
         )
-    model, model_kwargs, load_debug = build_planner_from_checkpoint_payload(payload, config)
+    model, model_kwargs, load_debug = build_planner_from_checkpoint_payload(payload, config, device=device)
+    diag = cuda_diagnostics(torch)
     print(
         format_metric_line(
             "sample-prior-init:",
@@ -436,6 +439,19 @@ def main(argv: list[str] | None = None) -> int:
                 ("prior_mode_strategy", prior_mode_strategy),
                 ("mode_prior_key", mode_prior_key),
                 ("label_prob_key", label_prob_key),
+            ],
+        )
+    )
+    print(
+        format_metric_line(
+            "sample-device:",
+            [
+                ("device", format_device_name(device, torch)),
+                ("model-device", model_parameter_device(model)),
+                ("cuda_available", diag["cuda_available"]),
+                ("cuda_device_count", diag["cuda_device_count"]),
+                ("cuda_device_name", diag["cuda_device_name"]),
+                ("torch_version", diag["torch_version"]),
             ],
         )
     )
@@ -455,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     model.eval()
     oversample = int(config["sampling"]["planner_oversample"])
     num_valid = int(config["sampling"]["num_valid_plans"])
-    category_ids = getattr(torch, "full")((oversample,), int(category_to_id[args.category]), dtype=getattr(torch, "long"))
+    category_ids = getattr(torch, "full")((oversample,), int(category_to_id[args.category]), dtype=getattr(torch, "long"), device=device)
     rows = []
     with getattr(torch, "no_grad")():
         num_modes = int(category_to_num_modes[args.category])
@@ -467,15 +483,15 @@ def main(argv: list[str] | None = None) -> int:
                 prior_batch = _instruction_prior_batch(cache_payload, args.category, torch, oversample, prior_mode_strategy, label_prob_key, mode_prior_key)
                 local_z = [int(value) for value in prior_batch["mode_ids"]]
                 condition_num_modes = min(max_num_modes, int(prior_batch["mode_count"]))
-                mode_mask = getattr(torch, "tensor")([[1 if k < condition_num_modes else 0 for k in range(max_num_modes)] for _ in range(oversample)], dtype=getattr(torch, "bool"))
-                centroid_fg_mask_prob = prior_batch["centroid_fg_mask_prob"]
-                centroid_label_prob_16_tensor = prior_batch["centroid_label_prob_16"]
-                centroid_label_hist_tensor = prior_batch["centroid_label_hist"]
-                centroid_row_projection_tensor = prior_batch["centroid_row_projection"]
-                centroid_col_projection_tensor = prior_batch["centroid_col_projection"]
-                centroid_adjacency_tensor = prior_batch["centroid_adjacency"]
-                centroid_transition_stats_tensor = prior_batch["centroid_transition_stats"]
-                centroid_bbox_stats_tensor = prior_batch["centroid_bbox_stats"]
+                mode_mask = getattr(torch, "tensor")([[1 if k < condition_num_modes else 0 for k in range(max_num_modes)] for _ in range(oversample)], dtype=getattr(torch, "bool"), device=device)
+                centroid_fg_mask_prob = prior_batch["centroid_fg_mask_prob"].to(device)
+                centroid_label_prob_16_tensor = prior_batch["centroid_label_prob_16"].to(device)
+                centroid_label_hist_tensor = prior_batch["centroid_label_hist"].to(device)
+                centroid_row_projection_tensor = prior_batch["centroid_row_projection"].to(device)
+                centroid_col_projection_tensor = prior_batch["centroid_col_projection"].to(device)
+                centroid_adjacency_tensor = prior_batch["centroid_adjacency"].to(device)
+                centroid_transition_stats_tensor = prior_batch["centroid_transition_stats"].to(device)
+                centroid_bbox_stats_tensor = prior_batch["centroid_bbox_stats"].to(device)
                 label_prob_key = str(prior_batch["label_prob_key"])
                 mode_prior_key = str(prior_batch["mode_prior_key"])
                 prior_debug.update({
@@ -505,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
                     "fallback_reason": fallback_reason,
                 })
         if prior_source == "category_kmeans":
-            mode_mask = getattr(torch, "tensor")([[1 if k < num_modes else 0 for k in range(max_num_modes)] for _ in range(oversample)], dtype=getattr(torch, "bool"))
+            mode_mask = getattr(torch, "tensor")([[1 if k < num_modes else 0 for k in range(max_num_modes)] for _ in range(oversample)], dtype=getattr(torch, "bool"), device=device)
             category_embed = model.category_embed(category_ids)
             z_logits = model.local_z_head(category_embed).masked_fill(mode_mask.logical_not(), float("-inf"))
             z_probs = getattr(__import__("importlib").import_module("torch.nn.functional"), "softmax")(z_logits, dim=-1)
@@ -533,14 +549,14 @@ def main(argv: list[str] | None = None) -> int:
                 centroid_adjacency.append(centroid["centroid_adjacency"])
                 centroid_transition_stats.append(centroid["centroid_transition_stats"])
                 centroid_bbox_stats.append(centroid["centroid_bbox_stats"])
-            centroid_fg_mask_prob = getattr(torch, "stack")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z]).to(dtype=getattr(torch, "float32"))
-            centroid_label_prob_16_tensor = getattr(torch, "stack")(centroid_label_prob_16).to(dtype=getattr(torch, "float32"))
-            centroid_label_hist_tensor = getattr(torch, "tensor")(centroid_label_hist, dtype=getattr(torch, "float32"))
-            centroid_row_projection_tensor = getattr(torch, "tensor")(centroid_row_projection, dtype=getattr(torch, "float32"))
-            centroid_col_projection_tensor = getattr(torch, "tensor")(centroid_col_projection, dtype=getattr(torch, "float32"))
-            centroid_adjacency_tensor = getattr(torch, "tensor")(centroid_adjacency, dtype=getattr(torch, "float32"))
-            centroid_transition_stats_tensor = getattr(torch, "tensor")(centroid_transition_stats, dtype=getattr(torch, "float32"))
-            centroid_bbox_stats_tensor = getattr(torch, "tensor")(centroid_bbox_stats, dtype=getattr(torch, "float32"))
+            centroid_fg_mask_prob = getattr(torch, "stack")([centroid_source[int(z)]["centroid_fg_mask_prob"] for z in local_z]).to(device=device, dtype=getattr(torch, "float32"))
+            centroid_label_prob_16_tensor = getattr(torch, "stack")(centroid_label_prob_16).to(device=device, dtype=getattr(torch, "float32"))
+            centroid_label_hist_tensor = getattr(torch, "tensor")(centroid_label_hist, dtype=getattr(torch, "float32"), device=device)
+            centroid_row_projection_tensor = getattr(torch, "tensor")(centroid_row_projection, dtype=getattr(torch, "float32"), device=device)
+            centroid_col_projection_tensor = getattr(torch, "tensor")(centroid_col_projection, dtype=getattr(torch, "float32"), device=device)
+            centroid_adjacency_tensor = getattr(torch, "tensor")(centroid_adjacency, dtype=getattr(torch, "float32"), device=device)
+            centroid_transition_stats_tensor = getattr(torch, "tensor")(centroid_transition_stats, dtype=getattr(torch, "float32"), device=device)
+            centroid_bbox_stats_tensor = getattr(torch, "tensor")(centroid_bbox_stats, dtype=getattr(torch, "float32"), device=device)
             actual_prior_source = "category_kmeans"
             prior_debug.update({
                 "actual_prior_source": actual_prior_source,
@@ -562,7 +578,7 @@ def main(argv: list[str] | None = None) -> int:
             centroid_adjacency_tensor,
             centroid_transition_stats_tensor,
             centroid_bbox_stats_tensor,
-            getattr(torch, "tensor")(local_z, dtype=getattr(torch, "long")),
+            getattr(torch, "tensor")(local_z, dtype=getattr(torch, "long"), device=device),
             mode_mask,
         )
         for index in range(oversample):
