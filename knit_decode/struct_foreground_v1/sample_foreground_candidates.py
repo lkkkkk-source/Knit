@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diversity-weight", type=float, default=0.25)
     parser.add_argument("--duplicate-mask-iou-threshold", type=float, default=0.95)
     parser.add_argument("--duplicate-label-hamming-threshold", type=float, default=0.05)
+    parser.add_argument("--dump-logit-diagnostics", action="store_true", help="Write lightweight mask/label logit diagnostics without changing sampling.")
+    parser.add_argument("--mask-thresholds", type=str, default="0.2,0.3,0.5", help="Comma-separated mask thresholds used only for diagnostics.")
     return parser
 
 
@@ -79,6 +81,181 @@ def _argmax_labels(label_prob: list[list[list[float]]], mask: list[list[int]]) -
                 row.append(int(max(range(16), key=lambda idx: float(label_prob[idx][y][x])) + 1))
         out.append(row)
     return out
+
+
+def _parse_mask_thresholds(text: str) -> list[float]:
+    thresholds: list[float] = []
+    for part in str(text).split(","):
+        value_text = part.strip()
+        if not value_text:
+            continue
+        value = float(value_text)
+        if value < 0.0 or value > 1.0:
+            raise ValueError(f"--mask-thresholds values must be in [0,1], got {value}.")
+        thresholds.append(value)
+    return thresholds or [0.5]
+
+
+def _dominant_label_ratio(label_grid: list[list[int]], mask_grid: list[list[int]]) -> float:
+    counts: dict[int, int] = {}
+    total = 0
+    for y_pos in range(20):
+        for x_pos in range(20):
+            if int(mask_grid[y_pos][x_pos]) <= 0:
+                continue
+            label = int(label_grid[y_pos][x_pos])
+            if label <= 0:
+                continue
+            counts[label] = counts.get(label, 0) + 1
+            total += 1
+    return float(max(counts.values(), default=0)) / float(max(1, total))
+
+
+def _tensor_stats(tensor: object) -> dict[str, float]:
+    return {
+        "min": float(tensor.min().item()),
+        "mean": float(tensor.mean().item()),
+        "max": float(tensor.max().item()),
+    }
+
+
+def _label_entropy_mean(torch: object, prob: object, mask: object) -> float:
+    mask_bool = mask.to(dtype=getattr(torch, "bool"))
+    if int(mask_bool.sum().item()) <= 0:
+        return 0.0
+    eps = 1.0e-8
+    entropy = -(prob.clamp_min(eps) * prob.clamp_min(eps).log()).sum(dim=0)
+    return float(entropy[mask_bool].mean().item())
+
+
+def _masked_top_prob_means(torch: object, prob: object, mask: object) -> tuple[float, float, float]:
+    mask_bool = mask.to(dtype=getattr(torch, "bool"))
+    if int(mask_bool.sum().item()) <= 0:
+        return 0.0, 0.0, 0.0
+    top2 = getattr(torch, "topk")(prob, k=2, dim=0).values
+    top1_values = top2[0][mask_bool]
+    top2_values = top2[1][mask_bool]
+    return (
+        float(top1_values.mean().item()),
+        float(top2_values.mean().item()),
+        float((top1_values - top2_values).mean().item()),
+    )
+
+
+def _candidate_logit_diagnostics(
+    torch: object,
+    fg_mask_logits: object,
+    fg_label_logits: object,
+    prior_fg_mask_prob: object,
+    prior_label_prob_16: object,
+    fg_mask: list[list[int]],
+    fg_label: list[list[int]],
+    composed_y20: list[list[int]],
+    label_diversity: float,
+    dominant_label_ratio: float,
+    mask_thresholds: list[float],
+) -> dict[str, object]:
+    mask_prob = getattr(torch, "sigmoid")(fg_mask_logits.detach())
+    label_logits = fg_label_logits.detach()
+    label_prob = getattr(__import__("importlib").import_module("torch.nn.functional"), "softmax")(label_logits, dim=0)
+    pred_mask_tensor = (mask_prob >= 0.5)
+    prior_mask_tensor = (prior_fg_mask_prob.detach()[0] >= 0.5)
+    label_argmax = (label_logits.argmax(dim=0) + 1).detach()
+    prior_label_argmax = (prior_label_prob_16.detach().argmax(dim=0) + 1).detach()
+    fg_mask_tensor = getattr(torch, "tensor")(fg_mask, dtype=getattr(torch, "bool"), device=fg_mask_logits.device)
+    fg_label_argmax_unique_fg = sorted({int(value) for value in label_argmax[fg_mask_tensor].detach().cpu().tolist()}) if int(fg_mask_tensor.sum().item()) > 0 else []
+    prior_unique_fg = sorted({int(value) for value in prior_label_argmax[prior_mask_tensor].detach().cpu().tolist()}) if int(prior_mask_tensor.sum().item()) > 0 else []
+    prior_label_grid = [[int(prior_label_argmax[y, x].item()) if bool(prior_mask_tensor[y, x].item()) else 0 for x in range(20)] for y in range(20)]
+    prior_mask_grid = prior_mask_tensor.to(dtype=getattr(torch, "long")).detach().cpu().tolist()
+    top1_mean, top2_mean, margin_mean = _masked_top_prob_means(torch, label_prob, fg_mask_tensor)
+    area_by_threshold = {
+        f"{threshold:.6g}": float(((mask_prob >= threshold).to(dtype=getattr(torch, "float32")).mean()).item())
+        for threshold in mask_thresholds
+    }
+    warnings: list[str] = []
+    if len(prior_unique_fg) > 1 and len(fg_label_argmax_unique_fg) <= 1:
+        warnings.append("model_not_using_label_prior")
+    if len(prior_unique_fg) <= 1:
+        warnings.append("selected_prior_label_collapse")
+    if len(fg_label_argmax_unique_fg) <= 1:
+        warnings.append("label_head_argmax_collapse")
+    area_03 = area_by_threshold.get("0.3")
+    area_05 = area_by_threshold.get("0.5")
+    if area_03 is not None and area_05 is not None and abs(area_03 - area_05) >= 0.05:
+        warnings.append("mask_threshold_sensitive")
+    return {
+        "mask": {
+            **_tensor_stats(fg_mask_logits.detach()),
+            "sigmoid_q50": float(getattr(torch, "quantile")(mask_prob.flatten(), 0.50).item()),
+            "sigmoid_q90": float(getattr(torch, "quantile")(mask_prob.flatten(), 0.90).item()),
+            "sigmoid_q95": float(getattr(torch, "quantile")(mask_prob.flatten(), 0.95).item()),
+            "sigmoid_q99": float(getattr(torch, "quantile")(mask_prob.flatten(), 0.99).item()),
+            "foreground_area_by_threshold": area_by_threshold,
+        },
+        "label": {
+            **_tensor_stats(label_logits),
+            "std": float(label_logits.std(unbiased=False).item()),
+            "fg_label_argmax_unique_tokens_all": sorted({int(value) for value in label_argmax.detach().cpu().flatten().tolist()}),
+            "fg_label_argmax_unique_tokens_pred_foreground": fg_label_argmax_unique_fg,
+            "fg_label_softmax_entropy_mean_pred_foreground": _label_entropy_mean(torch, label_prob, fg_mask_tensor),
+            "fg_label_softmax_entropy_mean_prior_foreground": _label_entropy_mean(torch, label_prob, prior_mask_tensor),
+            "top1_label_prob_mean_foreground": top1_mean,
+            "top2_label_prob_mean_foreground": top2_mean,
+            "top1_minus_top2_margin_mean_foreground": margin_mean,
+            "composed_y20_unique_values": sorted({int(value) for row in composed_y20 for value in row}),
+            "label_diversity": float(label_diversity),
+            "dominant_label_ratio": float(dominant_label_ratio),
+        },
+        "prior_label": {
+            "prior_fg_area": float(prior_mask_tensor.to(dtype=getattr(torch, "float32")).mean().item()),
+            "prior_label_argmax_unique_tokens_prior_foreground": prior_unique_fg,
+            "prior_label_prob_16_entropy_mean_prior_foreground": _label_entropy_mean(torch, prior_label_prob_16.detach(), prior_mask_tensor),
+            "prior_dominant_label_ratio": _dominant_label_ratio(prior_label_grid, prior_mask_grid),
+            "prior_label_diversity": float(label_diversity_on_fg(prior_label_grid, prior_mask_grid)),
+        },
+        "model_prior_comparison": {
+            "predicted_argmax_unique_vs_prior_argmax_unique": {
+                "predicted": fg_label_argmax_unique_fg,
+                "prior": prior_unique_fg,
+            },
+            "warnings": warnings,
+        },
+    }
+
+
+def _label_diagnostics_summary(rows: list[dict[str, object]], mask_thresholds: list[float]) -> dict[str, object]:
+    warnings_by_type: dict[str, int] = {}
+    pred_hist: dict[str, int] = {}
+    prior_hist: dict[str, int] = {}
+    threshold_area_sum = {f"{threshold:.6g}": 0.0 for threshold in mask_thresholds}
+    threshold_area_count = 0
+    for row in rows:
+        diag = row.get("label_diagnostics")
+        if not isinstance(diag, dict):
+            continue
+        pred_unique = diag.get("label", {}).get("fg_label_argmax_unique_tokens_pred_foreground", [])
+        prior_unique = diag.get("prior_label", {}).get("prior_label_argmax_unique_tokens_prior_foreground", [])
+        pred_hist[str(len(pred_unique))] = pred_hist.get(str(len(pred_unique)), 0) + 1
+        prior_hist[str(len(prior_unique))] = prior_hist.get(str(len(prior_unique)), 0) + 1
+        for warning in diag.get("model_prior_comparison", {}).get("warnings", []):
+            warnings_by_type[str(warning)] = warnings_by_type.get(str(warning), 0) + 1
+        area_by_threshold = diag.get("mask", {}).get("foreground_area_by_threshold", {})
+        if isinstance(area_by_threshold, dict):
+            threshold_area_count += 1
+            for key in threshold_area_sum:
+                threshold_area_sum[key] += float(area_by_threshold.get(key, 0.0))
+    return {
+        "num_candidates": len(rows),
+        "num_nonempty": sum(1 for row in rows if float(row.get("fg_area", 0.0)) > 0.0),
+        "num_low_label_diversity": sum(1 for row in rows if "low_label_diversity" in row.get("invalid_reasons", [])),
+        "predicted_unique_token_histogram": dict(sorted(pred_hist.items())),
+        "prior_unique_token_histogram": dict(sorted(prior_hist.items())),
+        "warnings_by_type": dict(sorted(warnings_by_type.items())),
+        "mask_thresholds": mask_thresholds,
+        "foreground_area_mean_by_threshold": {
+            key: value / float(max(1, threshold_area_count)) for key, value in sorted(threshold_area_sum.items())
+        },
+    }
 
 
 def _instruction_prior_batch(cache_payload: dict[str, object], category: str, torch: object, count: int, strategy: str, label_prob_key: str, mode_prior_key: str) -> dict[str, object]:
@@ -347,6 +524,7 @@ def _select_diverse_topk(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    mask_thresholds = _parse_mask_thresholds(args.mask_thresholds)
     config = load_config(args.config)
     canonical_mode = resolve_canonical_mode(config["data"])
     payload = _require_torch().load(args.checkpoint, map_location="cpu")
@@ -606,7 +784,22 @@ def main(argv: list[str] | None = None) -> int:
             grammar_desc = compute_candidate_descriptors(composed_y20, config.get("grammar_bank", {}) if isinstance(config.get("grammar_bank", {}), dict) else {})
             energy = grammar_energy.score(composed_y20, args.category, mode_z=int(out["local_z"][index].item())) if grammar_energy is not None else None
             energy_diag = energy.get("diagnostics", {}) if isinstance(energy, dict) else {}
-            rows.append({
+            label_diag = None
+            if bool(args.dump_logit_diagnostics):
+                label_diag = _candidate_logit_diagnostics(
+                    torch,
+                    out["fg_mask_logits"][index, 0],
+                    out["fg_label_logits"][index],
+                    centroid_fg_mask_prob[index],
+                    centroid_label_prob_16_tensor[index],
+                    fg_mask,
+                    fg_label,
+                    composed_y20,
+                    float(label_div),
+                    float(grammar_desc["dominant_label_ratio"]),
+                    mask_thresholds,
+                )
+            row = {
                 "index": index,
                 "local_z": int(out["local_z"][index].item()),
                 "prior_source": actual_prior_source,
@@ -637,7 +830,10 @@ def main(argv: list[str] | None = None) -> int:
                     **energy_diag,
                 },
                 "grammar_energy": energy,
-            })
+            }
+            if label_diag is not None:
+                row["label_diagnostics"] = label_diag
+            rows.append(row)
         valid_rows = [row for row in rows if row["is_valid_foreground"]]
         fallback_used = False
         duplicate_skipped_indices: list[int] = []
@@ -702,6 +898,8 @@ def main(argv: list[str] | None = None) -> int:
             "sample_dir": str(sample_dir),
             "grammar_energy": row.get("grammar_energy"),
         }
+        if args.dump_logit_diagnostics and "label_diagnostics" in row:
+            payload_row["label_diagnostics"] = row["label_diagnostics"]
         save_json(sample_dir / "meta.json", payload_row)
         outputs.append(payload_row)
         print_progress("sample-fg", out_index + 1, len(selected), f"z={row['local_z']} area={row['fg_area']:.4f}")
@@ -723,6 +921,8 @@ def main(argv: list[str] | None = None) -> int:
                 "grammar_energy": row.get("grammar_energy"),
                 "composed_y20": row["composed_y20"],
             })
+            if args.dump_logit_diagnostics and "label_diagnostics" in row:
+                raw_candidates[-1]["label_diagnostics"] = row["label_diagnostics"]
     finish_progress()
     ranking = ranking_energy_only if rerank_enabled else [int(row.get("index", i)) for i, row in enumerate(outputs)]
     summary = {
@@ -751,6 +951,46 @@ def main(argv: list[str] | None = None) -> int:
         "selected_topk_indices": selected_topk_indices if rerank_enabled else ranking,
     }
     save_json(output_dir / "candidates.json", summary)
+    if args.dump_logit_diagnostics:
+        label_diag_rows = [
+            {
+                "index": int(row["index"]),
+                "rank": int(index),
+                "category": args.category,
+                "local_z": int(row["local_z"]),
+                "prior_source": row.get("prior_source", actual_prior_source),
+                "prior_mode_id": int(row.get("prior_mode_id", row["local_z"])),
+                "is_valid_foreground": bool(row["is_valid_foreground"]),
+                "invalid_reasons": row["invalid_reasons"],
+                "fg_area": float(row["fg_area"]),
+                "label_diagnostics": row.get("label_diagnostics", {}),
+            }
+            for index, row in enumerate(rows)
+        ]
+        label_diag_summary = _label_diagnostics_summary(rows, mask_thresholds)
+        save_json(output_dir / "label_diagnostics.json", {
+            "category": args.category,
+            "requested_prior_source": requested_prior_source,
+            "actual_prior_source": actual_prior_source,
+            "summary": label_diag_summary,
+        })
+        save_jsonl(output_dir / "per_candidate_label_diagnostics.jsonl", label_diag_rows)
+        save_json(output_dir / "mask_threshold_sweep.json", {
+            "category": args.category,
+            "mask_thresholds": mask_thresholds,
+            "foreground_area_mean_by_threshold": label_diag_summary["foreground_area_mean_by_threshold"],
+            "candidates": [
+                {
+                    "index": int(row["index"]),
+                    "local_z": int(row["local_z"]),
+                    "prior_mode_id": int(row.get("prior_mode_id", row["local_z"])),
+                    "fg_area": float(row["fg_area"]),
+                    "foreground_area_by_threshold": (row.get("label_diagnostics", {}).get("mask", {}).get("foreground_area_by_threshold", {}) if isinstance(row.get("label_diagnostics"), dict) else {}),
+                    "warnings": (row.get("label_diagnostics", {}).get("model_prior_comparison", {}).get("warnings", []) if isinstance(row.get("label_diagnostics"), dict) else []),
+                }
+                for row in rows
+            ],
+        })
     save_json(output_dir / "prior_mode_ids.json", {
         "category": args.category,
         "requested_prior_source": requested_prior_source,

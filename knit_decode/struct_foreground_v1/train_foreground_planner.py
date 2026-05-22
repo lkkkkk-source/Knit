@@ -121,6 +121,9 @@ def _init_generated_metric_state() -> dict[str, object]:
         "label_diversity_sum": 0.0,
         "label_diversity_min": float("inf"),
         "label_diversity_max": 0.0,
+        "target_label_diversity_sum": 0.0,
+        "pred_dominant_label_ratio_sum": 0.0,
+        "target_dominant_label_ratio_sum": 0.0,
         "num_components_sum": 0.0,
         "largest_component_ratio_sum": 0.0,
         "tiny_component_count_sum": 0.0,
@@ -143,6 +146,21 @@ def _bbox_is_valid(bbox_pred: list[float]) -> bool:
     if float(aspect_ratio) <= 0.0:
         return False
     return True
+
+
+def _dominant_label_ratio(label_grid: list[list[int]], mask_grid: list[list[int]]) -> float:
+    counts: dict[int, int] = {}
+    total = 0
+    for y_pos in range(len(label_grid)):
+        for x_pos in range(len(label_grid[0])):
+            if not bool(mask_grid[y_pos][x_pos]):
+                continue
+            label = int(label_grid[y_pos][x_pos])
+            if not (1 <= label <= 16):
+                continue
+            counts[label] = counts.get(label, 0) + 1
+            total += 1
+    return float(max(counts.values(), default=0)) / float(max(1, total))
 
 
 def _accumulate_generated_metrics(
@@ -188,6 +206,8 @@ def _accumulate_generated_metrics(
         local_counts[local_z] = local_counts.get(local_z, 0) + 1
         pred_mask = fg_mask_pred[index].cpu().tolist()
         pred_label = fg_label_pred[index].cpu().tolist()
+        target_mask = fg_mask_target[index].cpu().tolist()
+        target_label = fg_target[index].cpu().tolist()
         bbox_pred = [float(value) for value in outputs["bbox_pred"][index].detach().cpu().tolist()]
         _ = compose_foreground(pred_mask, pred_label, bbox_pred)["composed_y20"]
         category = str(batch["categories"][index])
@@ -196,6 +216,9 @@ def _accumulate_generated_metrics(
         valid_high = float(area_stats.get("valid_high", 1.0))
         area = foreground_area(pred_mask)
         label_diversity = float(label_diversity_on_fg(pred_label, pred_mask))
+        target_label_diversity = float(label_diversity_on_fg(target_label, target_mask))
+        pred_dominant_ratio = _dominant_label_ratio(pred_label, pred_mask)
+        target_dominant_ratio = _dominant_label_ratio(target_label, target_mask)
         component_stats = mask_component_stats(pred_mask)
         bbox_valid = _bbox_is_valid(bbox_pred)
         is_empty = area <= 0.0
@@ -213,6 +236,9 @@ def _accumulate_generated_metrics(
         metric_state["label_diversity_sum"] = float(metric_state["label_diversity_sum"]) + label_diversity
         metric_state["label_diversity_min"] = min(float(metric_state["label_diversity_min"]), label_diversity)
         metric_state["label_diversity_max"] = max(float(metric_state["label_diversity_max"]), label_diversity)
+        metric_state["target_label_diversity_sum"] = float(metric_state["target_label_diversity_sum"]) + target_label_diversity
+        metric_state["pred_dominant_label_ratio_sum"] = float(metric_state["pred_dominant_label_ratio_sum"]) + pred_dominant_ratio
+        metric_state["target_dominant_label_ratio_sum"] = float(metric_state["target_dominant_label_ratio_sum"]) + target_dominant_ratio
         metric_state["num_components_sum"] = float(metric_state["num_components_sum"]) + float(component_stats["num_components"])
         metric_state["largest_component_ratio_sum"] = float(metric_state["largest_component_ratio_sum"]) + float(component_stats["largest_component_ratio"])
         metric_state["tiny_component_count_sum"] = float(metric_state["tiny_component_count_sum"]) + float(component_stats["tiny_component_count"])
@@ -271,6 +297,10 @@ def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, fl
         "fg_area_valid_low_mean": float(metric_state["fg_area_valid_low_sum"]) / denom,
         "fg_area_valid_high_mean": float(metric_state["fg_area_valid_high_sum"]) / denom,
         "label_diversity_mean": float(metric_state["label_diversity_sum"]) / denom,
+        "pred_label_diversity_mean": float(metric_state["label_diversity_sum"]) / denom,
+        "target_label_diversity_mean": float(metric_state["target_label_diversity_sum"]) / denom,
+        "pred_dominant_label_ratio_mean": float(metric_state["pred_dominant_label_ratio_sum"]) / denom,
+        "target_dominant_label_ratio_mean": float(metric_state["target_dominant_label_ratio_sum"]) / denom,
         "label_diversity_min": 0.0 if sample_count <= 0 else float(metric_state["label_diversity_min"]),
         "label_diversity_max": 0.0 if sample_count <= 0 else float(metric_state["label_diversity_max"]),
         "num_components_mean": float(metric_state["num_components_sum"]) / denom,
@@ -293,6 +323,10 @@ def _finalize_generated_metrics(metric_state: dict[str, object]) -> dict[str, fl
             "fg_area_valid_low_mean",
             "fg_area_valid_high_mean",
             "label_diversity_mean",
+            "pred_label_diversity_mean",
+            "target_label_diversity_mean",
+            "pred_dominant_label_ratio_mean",
+            "target_dominant_label_ratio_mean",
             "label_diversity_min",
             "label_diversity_max",
             "num_components_mean",
@@ -623,6 +657,9 @@ def main(argv: list[str] | None = None) -> int:
             ("train_area_low_rate", cast(float, summary["train_fg_area_low_rate"])),
             ("train_area_high_rate", cast(float, summary["train_fg_area_high_rate"])),
             ("train_low_div_rate", cast(float, summary["train_low_label_diversity_rate"])),
+            ("train_pred_label_div", cast(float, summary["train_pred_label_diversity_mean"])),
+            ("train_target_label_div", cast(float, summary["train_target_label_diversity_mean"])),
+            ("train_pred_dom", cast(float, summary["train_pred_dominant_label_ratio_mean"])),
             ("train_num_comp", cast(float, summary["train_num_components_mean"])),
             ("train_largest_comp", cast(float, summary["train_largest_component_ratio_mean"])),
             ("train_tiny_comp", cast(float, summary["train_tiny_component_count_mean"])),
@@ -638,6 +675,9 @@ def main(argv: list[str] | None = None) -> int:
                     ("val_area_low_rate", cast(float, summary["val_fg_area_low_rate"])),
                     ("val_area_high_rate", cast(float, summary["val_fg_area_high_rate"])),
                     ("val_low_div_rate", cast(float, summary["val_low_label_diversity_rate"])),
+                    ("val_pred_label_div", cast(float, summary["val_pred_label_diversity_mean"])),
+                    ("val_target_label_div", cast(float, summary["val_target_label_diversity_mean"])),
+                    ("val_pred_dom", cast(float, summary["val_pred_dominant_label_ratio_mean"])),
                     ("val_num_comp", cast(float, summary["val_num_components_mean"])),
                     ("val_largest_comp", cast(float, summary["val_largest_component_ratio_mean"])),
                     ("val_tiny_comp", cast(float, summary["val_tiny_component_count_mean"])),
